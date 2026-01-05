@@ -19,6 +19,24 @@ from pathlib import Path
 import threading
 from contextlib import contextmanager
 
+def _safe_isatty(stream) -> bool:
+    """Return True if stream looks like a tty; never raise."""
+    try:
+        return bool(getattr(stream, "isatty", lambda: False)())
+    except Exception:
+        return False
+
+def _get_console_stream():
+    """
+    KiCad (GUI) can set sys.stdout/sys.stderr to None.
+    Prefer the original streams if available.
+    Returning None is fine: logging.StreamHandler(None) falls back to sys.stderr.
+    """
+    for name in ("stdout", "__stdout__", "stderr", "__stderr__"):
+        s = getattr(sys, name, None)
+        if s is not None:
+            return s
+    return None
 
 class ThermalAnalyzerFormatter(logging.Formatter):
     """Custom formatter with color support and detailed formatting."""
@@ -33,9 +51,11 @@ class ThermalAnalyzerFormatter(logging.Formatter):
         'RESET': '\033[0m',
     }
     
-    def __init__(self, use_colors: bool = True):
+    def __init__(self, use_colors: bool = True, stream=None):
         super().__init__()
-        self.use_colors = use_colors and sys.stdout.isatty()
+        if stream is None:
+            stream = _get_console_stream()
+        self.use_colors = bool(use_colors and _safe_isatty(stream))
     
     def format(self, record: logging.LogRecord) -> str:
         timestamp = datetime.fromtimestamp(record.created).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -143,9 +163,10 @@ class ThermalAnalyzerLogger:
         self.logger.handlers = []  # Clear any existing handlers
         
         # Console handler
-        console_handler = logging.StreamHandler(sys.stdout)
+        stream = _get_console_stream()
+        console_handler = logging.StreamHandler(stream)
         console_handler.setLevel(console_level)
-        console_handler.setFormatter(ThermalAnalyzerFormatter(use_colors=True))
+        console_handler.setFormatter(ThermalAnalyzerFormatter(use_colors=True, stream=stream))
         self.logger.addHandler(console_handler)
         
         # File handler

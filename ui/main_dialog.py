@@ -36,6 +36,7 @@ from ..core.constants import (
     MaterialsDatabase, ComponentThermalDatabase, SimulationDefaults
 )
 from ..core.pcb_extractor import PCBExtractor, PCBData
+from ..core.schematic_importer import find_schematic_for_pcb, extract_component_powers_from_schematic
 from ..solvers.thermal_solver import ThermalAnalysisEngine, ThermalSimulationResult
 from ..utils.logger import get_logger, initialize_logger
 
@@ -446,15 +447,131 @@ class CurrentInjectionPanel(StyledPanel):
             del self.config.current_injection_points[idx]
             self._refresh_list()
     
+    # def _on_pick(self, event):
+    #     """Pick location from PCB."""
+    #     wx.MessageBox(
+    #         "Click on the PCB to select a location.\n"
+    #         "This feature requires the PCB viewer to be active.",
+    #         "Pick from PCB",
+    #         wx.OK | wx.ICON_INFORMATION
+    #     )
     def _on_pick(self, event):
-        """Pick location from PCB."""
-        wx.MessageBox(
-            "Click on the PCB to select a location.\n"
-            "This feature requires the PCB viewer to be active.",
-            "Pick from PCB",
-            wx.OK | wx.ICON_INFORMATION
-        )
-    
+        """Pick location from PCB selection."""
+        try:
+            import pcbnew
+            board = pcbnew.GetBoard()
+            
+            # Get the PCB editor frame and its selection
+            frame = None
+            for w in wx.GetTopLevelWindows():
+                if w and w.IsShown() and '.kicad_pcb' in w.GetTitle():
+                    frame = w
+                    break
+            
+            if frame is None:
+                wx.MessageBox("PCB Editor window not found.", "Error", wx.OK | wx.ICON_ERROR)
+                return
+            
+            # Try to get selection via the TOOL_MANAGER (KiCad 7+)
+            try:
+                tool_mgr = frame.GetToolManager()
+                selection_tool = tool_mgr.GetTool("pcbnew.InteractiveSelection")
+                selection = selection_tool.GetSelection()
+            except:
+                selection = None
+            
+            if selection is None or selection.GetCount() == 0:
+                wx.MessageBox(
+                    "No item selected.\n\n"
+                    "How to use:\n"
+                    "1. In the PCB Editor, click on a pad, track, or via\n"
+                    "2. Then click 'Pick from PCB' to import its location",
+                    "Pick from PCB",
+                    wx.OK | wx.ICON_INFORMATION
+                )
+                return
+            
+            # Get the first selected item
+            item = selection.GetItem(0)
+            
+            # Extract position and net info based on item type
+            pos = None
+            net_name = ""
+            layer = ""
+            
+            item_type = item.GetClass()
+            
+            if item_type == "PAD":
+                pad = item.Cast()
+                pos = pad.GetPosition()
+                net_name = pad.GetNetname()
+                layer = board.GetLayerName(pad.GetLayer())
+                
+            elif item_type == "PCB_TRACK":
+                track = item.Cast()
+                # Use midpoint of track
+                start = track.GetStart()
+                end = track.GetEnd()
+                pos = pcbnew.VECTOR2I((start.x + end.x) // 2, (start.y + end.y) // 2)
+                net_name = track.GetNetname()
+                layer = board.GetLayerName(track.GetLayer())
+                
+            elif item_type == "PCB_VIA":
+                via = item.Cast()
+                pos = via.GetPosition()
+                net_name = via.GetNetname()
+                layer = "F.Cu"  # Vias span layers
+                
+            elif item_type == "ZONE":
+                zone = item.Cast()
+                # Use zone's bounding box center
+                bbox = zone.GetBoundingBox()
+                pos = bbox.GetCenter()
+                net_name = zone.GetNetname()
+                layer = board.GetLayerName(zone.GetLayer())
+            
+            else:
+                wx.MessageBox(
+                    f"Selected item type '{item_type}' not supported.\n"
+                    "Please select a pad, track, via, or zone.",
+                    "Pick from PCB",
+                    wx.OK | wx.ICON_WARNING
+                )
+                return
+            
+            if pos is None:
+                return
+            
+            # Convert to mm and populate fields
+            x_mm = pcbnew.ToMM(pos.x)
+            y_mm = pcbnew.ToMM(pos.y)
+            
+            self.spin_x.SetValue(x_mm)
+            self.spin_y.SetValue(y_mm)
+            self.txt_net.SetValue(net_name)
+            
+            # Set layer in dropdown if it exists
+            layer_idx = self.choice_layer.FindString(layer)
+            if layer_idx != wx.NOT_FOUND:
+                self.choice_layer.SetSelection(layer_idx)
+            
+            wx.MessageBox(
+                f"Imported from {item_type}:\n"
+                f"  Position: ({x_mm:.2f}, {y_mm:.2f}) mm\n"
+                f"  Net: {net_name}\n"
+                f"  Layer: {layer}",
+                "Pick from PCB",
+                wx.OK | wx.ICON_INFORMATION
+            )
+            
+        except Exception as e:
+            wx.MessageBox(
+                f"Failed to read selection:\n{e}\n\n"
+                "Make sure you have an item selected in the PCB Editor.",
+                "Pick from PCB Error",
+                wx.OK | wx.ICON_ERROR
+            )
+                
     def _load_from_config(self):
         """Load from config."""
         self._refresh_list()
@@ -475,10 +592,11 @@ class CurrentInjectionPanel(StyledPanel):
 class ComponentPowerPanel(StyledPanel):
     """Panel for component power dissipation configuration."""
     
-    def __init__(self, parent, config: ThermalAnalysisConfig, pcb_data: Optional[PCBData] = None):
+    def __init__(self, parent, config: ThermalAnalysisConfig, pcb_data: Optional[PCBData] = None, pcb_path: Optional[str] = None):
         super().__init__(parent)
         self.config = config
         self.pcb_data = pcb_data
+        self.pcb_path = pcb_path
         self._create_controls()
         self._create_layout()
         self._bind_events()
@@ -539,11 +657,16 @@ class ComponentPowerPanel(StyledPanel):
     
     def _bind_events(self):
         """Bind events."""
+        self.Bind(wx.EVT_CLOSE, self._on_window_close)
         self.btn_add.Bind(wx.EVT_BUTTON, self._on_add)
         self.btn_remove.Bind(wx.EVT_BUTTON, self._on_remove)
         self.btn_import.Bind(wx.EVT_BUTTON, self._on_import)
         self.btn_auto.Bind(wx.EVT_BUTTON, self._on_auto)
     
+    def _on_window_close(self, event):
+        """Handle window close."""
+        self.Destroy()
+
     def _on_add(self, event):
         """Add or update component power."""
         ref = self.txt_ref.GetValue().strip()
@@ -575,31 +698,62 @@ class ComponentPowerPanel(StyledPanel):
             self._refresh_list()
     
     def _on_import(self, event):
-        """Import power from schematic POWER_DISSIPATION fields."""
+        """Import power from the .kicad_sch POWER_DISSIPATION properties."""
+
+        if not self.pcb_path:
+            wx.MessageBox(
+                "Can't locate the PCB file path.\n"
+                "Save/open the PCB (*.kicad_pcb) and try again.",
+                "Import Error",
+                wx.OK | wx.ICON_WARNING
+            )
+            return
+
+        sch_path = find_schematic_for_pcb(self.pcb_path)
+        if not sch_path:
+            wx.MessageBox(
+                "Couldn't locate a schematic (*.kicad_sch) next to this PCB.\n"
+                "Expected something like <project>.kicad_sch in the same folder.",
+                "Import Error",
+                wx.OK | wx.ICON_WARNING
+            )
+            return
+
+        try:
+            powers = extract_component_powers_from_schematic(sch_path)
+        except Exception as e:
+            wx.MessageBox(
+                f"Failed to parse schematic:\n{e}",
+                "Import Error",
+                wx.OK | wx.ICON_ERROR
+            )
+            return
+
+        valid_refs = None
         if self.pcb_data:
-            count = 0
-            for comp in self.pcb_data.components:
-                if comp.power_dissipation_w > 0:
-                    # Check if already exists
-                    exists = False
-                    for cfg in self.config.component_power:
-                        if cfg.reference == comp.reference:
-                            exists = True
-                            break
-                    
-                    if not exists:
-                        self.config.component_power.append(ComponentPowerConfig(
-                            reference=comp.reference,
-                            power_w=comp.power_dissipation_w,
-                            source="schematic"
-                        ))
-                        count += 1
-            
-            self._refresh_list()
-            wx.MessageBox(f"Imported {count} components from schematic.", "Import Complete")
-        else:
-            wx.MessageBox("No PCB data available.", "Import Error", wx.ICON_WARNING)
-    
+            valid_refs = {c.reference for c in self.pcb_data.components}
+
+        count = 0
+        for ref, power_w in powers.items():
+            if power_w <= 0:
+                continue
+            if valid_refs is not None and ref not in valid_refs:
+                continue
+
+            # Don't overwrite existing entries (especially manual)
+            if any(cfg.reference == ref for cfg in self.config.component_power):
+                continue
+
+            self.config.component_power.append(ComponentPowerConfig(
+                reference=ref,
+                power_w=power_w,
+                source="schematic"
+            ))
+            count += 1
+
+        self._refresh_list()
+        wx.MessageBox(f"Imported {count} components from schematic.", "Import Complete")
+
     def _on_auto(self, event):
         """Auto-detect components from PCB."""
         if self.pcb_data:
@@ -708,20 +862,35 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
         self.board = board
         self.logger = get_logger()
         
-        # Initialize config
-        self.config_manager = ConfigManager()
+        # Resolve PCB path early (also used for config + schematic import)
+        self.pcb_path = None
+        if board is not None:
+            try:
+                self.pcb_path = board.GetFileName()
+            except Exception:
+                self.pcb_path = None
+
+        # Initialize config (persist next to the PCB)
+        self.config_manager = ConfigManager(self.pcb_path) if self.pcb_path else ConfigManager()
+        if self.pcb_path:
+            self.config_manager.load()
         self.config = self.config_manager.get_config()
-        
+
         # Extract PCB data if board available
         self.pcb_data = None
-        if board:
+        if board is not None:
             try:
                 extractor = PCBExtractor(board)
                 self.pcb_data = extractor.extract_all()
                 self.logger.info(f"PCB data extracted: {self.pcb_data.component_count} components")
             except Exception as e:
                 self.logger.error(f"Failed to extract PCB data: {e}")
-        
+                wx.MessageBox(
+                    f"Failed to extract PCB data.\n\n{e}\n\n"
+                    "Make sure you're running this from the PCB Editor with a board open.",
+                    "TVAC Thermal Analyzer",
+                    wx.OK | wx.ICON_WARNING    
+                )    
         # Results
         self.thermal_result: Optional[ThermalSimulationResult] = None
         
@@ -745,7 +914,7 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
         self.notebook.AddPage(self.current_panel, "Current")
         
         # Tab 3: Component Power
-        self.power_panel = ComponentPowerPanel(self.notebook, self.config, self.pcb_data)
+        self.power_panel = ComponentPowerPanel(self.notebook, self.config, self.pcb_data, pcb_path=self.pcb_path)
         self.notebook.AddPage(self.power_panel, "Components")
         
         # Tab 4: Stackup (placeholder)
@@ -864,17 +1033,17 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
             if self.thermal_result and self.thermal_result.frames:
                 final = self.thermal_result.frames[-1]
                 self.status_bar.SetLabel(
-                    f"Complete: Tmax={final.max_temp_c:.1f}°C, "
-                    f"Tmin={final.min_temp_c:.1f}°C, "
-                    f"Tavg={final.avg_temp_c:.1f}°C"
+                    f"Complete: Tmax={final.max_temp:.1f}°C, "
+                    f"Tmin={final.min_temp:.1f}°C, "
+                    f"Tavg={final.avg_temp:.1f}°C"
                 )
                 
                 wx.MessageBox(
                     f"Simulation Complete!\n\n"
-                    f"Maximum Temperature: {final.max_temp_c:.1f}°C\n"
-                    f"Minimum Temperature: {final.min_temp_c:.1f}°C\n"
-                    f"Average Temperature: {final.avg_temp_c:.1f}°C\n"
-                    f"Time: {self.thermal_result.total_time_s:.1f}s",
+                    f"Maximum Temperature: {final.max_temp:.1f}°C\n"
+                    f"Minimum Temperature: {final.min_temp:.1f}°C\n"
+                    f"Average Temperature: {final.avg_temp:.1f}°C\n"
+                    f"Time: {self.thermal_result.total_simulation_time:.1f}s",
                     "Simulation Complete",
                     wx.OK | wx.ICON_INFORMATION
                 )
@@ -909,22 +1078,30 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
         if dlg.ShowModal() == wx.ID_OK:
             path = dlg.GetPath()
             try:
-                from ..utils.report_generator import ThermalReportGenerator, ReportMetadata
+                from ..utils.report_generator import ThermalReportGenerator, ReportConfig
                 
-                metadata = ReportMetadata(
+                report_config = ReportConfig(
+                    title="TVAC Thermal Analysis Report",
                     project_name="TVAC Thermal Analysis",
-                    date=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    author="TVAC Thermal Analyzer",
                 )
                 
-                generator = ThermalReportGenerator(path)
-                generator.generate(
-                    self.thermal_result,
-                    self.config,
-                    self.pcb_data,
-                    metadata=metadata
+                generator = ThermalReportGenerator(report_config)
+                # Note: generate_report requires mesh and current_results which we may not have stored
+                # For now, use a simplified call that handles missing data
+                success = generator.generate_report(
+                    output_path=path,
+                    thermal_results=self.thermal_result,
+                    current_results=None,  # Would need to store this from simulation
+                    mesh=None,  # Would need to store this from simulation
+                    analysis_config=self.config,
+                    pcb_data=self.pcb_data
                 )
                 
-                wx.MessageBox(f"Report saved to:\n{path}", "Export Complete")
+                if success:
+                    wx.MessageBox(f"Report saved to:\n{path}", "Export Complete")
+                else:
+                    wx.MessageBox("Report generation failed", "Error", wx.ICON_ERROR)
                 
             except Exception as e:
                 self.logger.exception(f"Report generation failed: {e}")
@@ -943,7 +1120,7 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
     
     def _on_close(self, event):
         """Close dialog."""
-        self.EndModal(wx.ID_OK)
+        self.Close()
 
 
 # Import datetime for report generation

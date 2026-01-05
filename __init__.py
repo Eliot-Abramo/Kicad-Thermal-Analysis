@@ -26,11 +26,11 @@ __kicad_version__ = "9.0"
 
 # Version info
 VERSION_INFO = {
-    'major': 1,
-    'minor': 0,
-    'patch': 0,
-    'release': 'stable',
-    'build': '20250105',
+    "major": 1,
+    "minor": 0,
+    "patch": 0,
+    "release": "stable",
+    "build": "20250105",
 }
 
 def get_version_string() -> str:
@@ -38,79 +38,45 @@ def get_version_string() -> str:
     return f"{VERSION_INFO['major']}.{VERSION_INFO['minor']}.{VERSION_INFO['patch']}"
 
 
-# Import submodules for convenient access
-from . import core
-from . import solvers
-from . import utils
-from . import ui
+def _register_with_kicad() -> None:
+    """Register the action plugin when running inside KiCad."""
+    try:
+        import pcbnew  # only available inside KiCad's PCB Editor runtime
+    except Exception:
+        return
 
-# Convenience imports
-from .core import (
-    ThermalAnalysisConfig,
-    ConfigManager,
-    PCBExtractor,
-    PCBData,
-    MaterialsDatabase,
-    ComponentThermalDatabase,
-)
+    try:
+        from .tvac_thermal_analyzer_plugin import TVACThermalAnalyzerPlugin
+        TVACThermalAnalyzerPlugin().register()
+    except Exception as e:
+        # Never raise during discovery: KiCad will silently skip the plugin.
+        try:
+            print(f"TVAC Thermal Analyzer: registration failed: {e}")
+        except Exception:
+            pass
 
-from .solvers import (
-    ThermalSimulationResult,
-    ThermalResults,
-    ThermalSolver,
-    ThermalAnalysisEngine,
-    CurrentDistributionSolver,
-    CurrentDistributionResult,
-    MeshGenerator,
-    ThermalMesh,
-    run_simulation,
-)
 
-from .utils import (
-    get_logger,
-    initialize_logger,
-)
+_register_with_kicad()
+del _register_with_kicad
 
-from .ui import (
-    TVACThermalAnalyzerDialog,
-    HeatMapOverlay,
-)
-
+#
+# IMPORTANT (KiCad plugin discovery):
+# KiCad imports Python *packages* found in the plugins folder at startup.
+# That means THIS FILE runs during plugin discovery.
+#
+# Keep imports here lightweight: do NOT import subpackages that pull optional
+# dependencies (numpy/scipy/reportlab/etc.), or KiCad may fail to import the
+# package and the plugin will not appear.
+#
+# NOTE: Plugin registration is handled by tvac_thermal_analyzer_plugin.py
+# Do NOT register here to avoid duplicate menu entries.
+#
 
 __all__ = [
-    # Version
-    '__version__',
-    '__author__',
-    '__license__',
-    '__kicad_version__',
-    'VERSION_INFO',
-    'get_version_string',
-    # Submodules
-    'core',
-    'solvers',
-    'utils',
-    'ui',
-    # Core
-    'ThermalAnalysisConfig',
-    'ConfigManager',
-    'PCBExtractor',
-    'PCBData',
-    'MaterialsDatabase',
-    'ComponentThermalDatabase',
-    # Solvers
-    'ThermalSimulationResult',
-    'ThermalResults',
-    'ThermalSolver',
-    'ThermalAnalysisEngine',
-    'CurrentDistributionSolver',
-    'CurrentDistributionResult',
-    'MeshGenerator',
-    'ThermalMesh',
-    'run_simulation',
-    # Utils
-    'get_logger',
-    'initialize_logger',
-    # UI
-    'TVACThermalAnalyzerDialog',
-    'HeatMapOverlay',
+    "__version__",
+    "__author__",
+    "__license__",
+    "__kicad_version__",
+    "VERSION_INFO",
+    "get_version_string",
 ]

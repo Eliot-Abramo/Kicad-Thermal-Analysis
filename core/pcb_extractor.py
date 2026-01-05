@@ -261,7 +261,7 @@ class MountingHole:
 @dataclass
 class BoardOutline:
     """PCB board outline."""
-    outline: List[Point2D]
+    outline: List[Point2D] = field(default_factory=list)
     width_mm: float = 0.0
     height_mm: float = 0.0
     area_mm2: float = 0.0

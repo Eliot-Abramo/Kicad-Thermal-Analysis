@@ -390,7 +390,7 @@ class MeshGenerator:
     
     def _set_substrate_properties(self, node: MeshNode, stackup_config):
         """Set material properties for substrate node."""
-        from .constants import MaterialsDatabase
+        from ..core.constants import MaterialsDatabase
         
         material_key = stackup_config.substrate_material
         material = MaterialsDatabase.PCB_SUBSTRATES.get(
@@ -405,7 +405,7 @@ class MeshGenerator:
     
     def _assign_copper_properties(self, stackup_config):
         """Assign copper properties to nodes on copper features."""
-        from .constants import MaterialsDatabase
+        from ..core.constants import MaterialsDatabase
         
         copper = MaterialsDatabase.CONDUCTORS['COPPER']
         
@@ -543,7 +543,7 @@ class MeshGenerator:
     
     def _assign_via_properties(self, stackup_config):
         """Assign via thermal properties."""
-        from .constants import MaterialsDatabase
+        from ..core.constants import MaterialsDatabase
         
         copper = MaterialsDatabase.CONDUCTORS['COPPER']
         
@@ -565,7 +565,7 @@ class MeshGenerator:
     
     def _assign_component_properties(self):
         """Assign component thermal properties."""
-        from .constants import ComponentThermalDatabase
+        from ..core.constants import ComponentThermalDatabase
         
         for comp in self.pcb_data.components:
             # Find component location

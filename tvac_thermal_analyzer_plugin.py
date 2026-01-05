@@ -15,6 +15,8 @@ License: MIT
 
 import os
 import sys
+import site
+import traceback
 
 # Add plugin directory to path for imports
 plugin_dir = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +62,30 @@ class TVACThermalAnalyzerPlugin(pcbnew.ActionPlugin if HAS_KICAD else object):
     
     def Run(self):
         """Execute the plugin."""
+
+        # KiCad sometimes doesn't include user site-packages on sys.path
+        try:
+            user_site = site.getusersitepackages()
+            if user_site and user_site not in sys.path:
+                site.addsitedir(user_site)
+        except Exception:
+            pass
+
+        # Dependency check with actionable error message
+        try:
+            import scipy  # noqa: F401
+        except Exception as e:
+            msg = (
+                "SciPy is not available in KiCad's Python environment.\n\n"
+                f"KiCad Python: {sys.executable}\n"
+                f"Version: {sys.version}\n\n"
+                "Install SciPy into this interpreter, e.g.:\n"
+                f"  \"{sys.executable}\" -m pip install scipy\n\n"
+                f"Original error: {e}"
+            )
+            wx.MessageBox(msg, "TVAC Thermal Analyzer Error", wx.OK | wx.ICON_ERROR)
+            return
+
         try:
             # Initialize logger
             from tvac_thermal_analyzer.utils import initialize_logger
@@ -81,18 +107,33 @@ class TVACThermalAnalyzerPlugin(pcbnew.ActionPlugin if HAS_KICAD else object):
             # Import and show the main dialog
             from tvac_thermal_analyzer.ui import TVACThermalAnalyzerDialog
             
-            # Get the main KiCad window as parent
-            parent = wx.GetTopLevelWindows()[0] if wx.GetTopLevelWindows() else None
-            
+            # IMPORTANT: parent to the PCB Editor frame, not the Project Manager.
+            parent = None
+            try:
+                # In KiCad 9+, use FindWindowByName to get the PCB Editor specifically
+                for w in wx.GetTopLevelWindows():
+                    if w and w.IsShown():
+                        title = w.GetTitle()
+                        # PCB Editor window title contains the .kicad_pcb filename
+                        if '.kicad_pcb' in title or 'PCB Editor' in title:
+                            parent = w
+                            break
+            except Exception:
+                pass
+
+            if parent is None:
+                # Fallback: choose a shown top-level window (better than index 0)
+                tops = [w for w in wx.GetTopLevelWindows() if w and w.IsShown()]
+                parent = tops[0] if tops else None
+
             # Create and show dialog
             dialog = TVACThermalAnalyzerDialog(parent, board)
-            dialog.ShowModal()
-            dialog.Destroy()
+            dialog.Show()
+            # dialog.Destroy()
             
             logger.info("TVAC Thermal Analyzer plugin closed")
             
         except Exception as e:
-            import traceback
             error_msg = f"Plugin error: {str(e)}\n\n{traceback.format_exc()}"
             wx.MessageBox(
                 error_msg,
@@ -101,9 +142,9 @@ class TVACThermalAnalyzerPlugin(pcbnew.ActionPlugin if HAS_KICAD else object):
             )
 
 
-# Register the plugin with KiCad
-if HAS_KICAD:
-    TVACThermalAnalyzerPlugin().register()
+# # Register the plugin with KiCad
+# if HAS_KICAD:
+#     TVACThermalAnalyzerPlugin().register()
 
 
 # =============================================================================

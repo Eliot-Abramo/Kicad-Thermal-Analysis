@@ -23,21 +23,21 @@ def get_report_generator():
     from .report_generator import ThermalReportGenerator
     return ThermalReportGenerator
 
-def get_report_metadata():
-    """Get the ReportMetadata class (lazy import)."""
-    from .report_generator import ReportMetadata
-    return ReportMetadata
+def get_report_config():
+    """Get the ReportConfig class (lazy import)."""
+    from .report_generator import ReportConfig
+    return ReportConfig
 
 # For backwards compatibility, we also expose these at module level
 # but they will be imported lazily
-ReportMetadata = None
+ReportConfig = None
 ThermalReportGenerator = None
 
 def __getattr__(name):
     """Lazy attribute access for report classes."""
-    if name == 'ReportMetadata':
-        from .report_generator import ReportMetadata
-        return ReportMetadata
+    if name == 'ReportConfig':
+        from .report_generator import ReportConfig
+        return ReportConfig
     elif name == 'ThermalReportGenerator':
         from .report_generator import ThermalReportGenerator
         return ThermalReportGenerator
@@ -56,8 +56,8 @@ __all__ = [
     'log_exception_handler',
     'format_error_report',
     # Report (lazy loaded)
-    'ReportMetadata',
+    'ReportConfig',
     'ThermalReportGenerator',
     'get_report_generator',
-    'get_report_metadata',
+    'get_report_config',
 ]

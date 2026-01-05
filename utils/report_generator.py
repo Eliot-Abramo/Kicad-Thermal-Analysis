@@ -7,6 +7,8 @@ Author: Space Electronics Thermal Analysis Tool
 Version: 1.0.0
 """
 
+from __future__ import annotations
+
 import os
 import io
 from datetime import datetime
