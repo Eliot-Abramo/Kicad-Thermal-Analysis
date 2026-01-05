@@ -329,10 +329,11 @@ class SimulationSettingsPanel(StyledPanel):
 class CurrentInjectionPanel(StyledPanel):
     """Panel for defining current injection points."""
     
-    def __init__(self, parent, config: ThermalAnalysisConfig, pcb_data: Optional[PCBData] = None):
+    def __init__(self, parent, config: ThermalAnalysisConfig, pcb_data: Optional[PCBData] = None, board=None):
         super().__init__(parent)
         self.config = config
         self.pcb_data = pcb_data
+        self.board = board  # KiCad board object for picking
         self._create_controls()
         self._create_layout()
         self._bind_events()
@@ -447,131 +448,150 @@ class CurrentInjectionPanel(StyledPanel):
             del self.config.current_injection_points[idx]
             self._refresh_list()
     
-    # def _on_pick(self, event):
-    #     """Pick location from PCB."""
-    #     wx.MessageBox(
-    #         "Click on the PCB to select a location.\n"
-    #         "This feature requires the PCB viewer to be active.",
-    #         "Pick from PCB",
-    #         wx.OK | wx.ICON_INFORMATION
-    #     )
     def _on_pick(self, event):
         """Pick location from PCB selection."""
+        if not HAS_PCBNEW or self.board is None:
+            wx.MessageBox(
+                "No PCB board available.\n"
+                "Open a PCB in the editor first.",
+                "Pick from PCB",
+                wx.OK | wx.ICON_WARNING
+            )
+            return
+        
         try:
             import pcbnew
-            board = pcbnew.GetBoard()
             
-            # Get the PCB editor frame and its selection
-            frame = None
-            for w in wx.GetTopLevelWindows():
-                if w and w.IsShown() and '.kicad_pcb' in w.GetTitle():
-                    frame = w
-                    break
-            
-            if frame is None:
-                wx.MessageBox("PCB Editor window not found.", "Error", wx.OK | wx.ICON_ERROR)
-                return
-            
-            # Try to get selection via the TOOL_MANAGER (KiCad 7+)
+            # Get the current selection from the PCB editor
+            # KiCad 9+: use pcbnew.GetCurrentSelection() or iterate
             try:
-                tool_mgr = frame.GetToolManager()
-                selection_tool = tool_mgr.GetTool("pcbnew.InteractiveSelection")
-                selection = selection_tool.GetSelection()
-            except:
-                selection = None
+                # Try KiCad 9+ method first
+                selection = pcbnew.GetCurrentSelection()
+            except AttributeError:
+                # Fallback: iterate through all items looking for selected ones
+                selection = []
+                for track in self.board.GetTracks():
+                    if track.IsSelected():
+                        selection.append(track)
+                for fp in self.board.GetFootprints():
+                    if fp.IsSelected():
+                        selection.append(fp)
+                    for pad in fp.Pads():
+                        if pad.IsSelected():
+                            selection.append(pad)
+                for zone in self.board.Zones():
+                    if zone.IsSelected():
+                        selection.append(zone)
             
-            if selection is None or selection.GetCount() == 0:
+            # Handle both list and iterator types
+            if hasattr(selection, 'GetCount'):
+                count = selection.GetCount()
+                items = [selection.GetItem(i) for i in range(count)] if count > 0 else []
+            else:
+                items = list(selection) if selection else []
+            
+            if not items:
                 wx.MessageBox(
-                    "No item selected.\n\n"
-                    "How to use:\n"
-                    "1. In the PCB Editor, click on a pad, track, or via\n"
-                    "2. Then click 'Pick from PCB' to import its location",
+                    "No item selected in the PCB editor.\n"
+                    "Select a pad, track, via, or zone first,\n"
+                    "then click 'Pick from PCB'.",
                     "Pick from PCB",
                     wx.OK | wx.ICON_INFORMATION
                 )
                 return
             
             # Get the first selected item
-            item = selection.GetItem(0)
+            item = items[0]
             
-            # Extract position and net info based on item type
-            pos = None
             net_name = ""
             layer = ""
+            x_mm = 0.0
+            y_mm = 0.0
+            description = ""
             
-            item_type = item.GetClass()
+            item_class = item.GetClass()
             
-            if item_type == "PAD":
-                pad = item.Cast()
+            if item_class == "PCB_PAD":
+                pad = item
                 pos = pad.GetPosition()
+                x_mm = pcbnew.ToMM(pos.x)
+                y_mm = pcbnew.ToMM(pos.y)
                 net_name = pad.GetNetname()
-                layer = board.GetLayerName(pad.GetLayer())
+                # Get first copper layer
+                layer_set = pad.GetLayerSet()
+                for layer_id in [pcbnew.F_Cu, pcbnew.B_Cu, pcbnew.In1_Cu, pcbnew.In2_Cu]:
+                    if layer_set.Contains(layer_id):
+                        layer = self.board.GetLayerName(layer_id)
+                        break
+                description = f"Pad {pad.GetNumber()} of {pad.GetParent().GetReference()}"
                 
-            elif item_type == "PCB_TRACK":
-                track = item.Cast()
+            elif item_class == "PCB_TRACK":
+                track = item
                 # Use midpoint of track
                 start = track.GetStart()
                 end = track.GetEnd()
-                pos = pcbnew.VECTOR2I((start.x + end.x) // 2, (start.y + end.y) // 2)
+                x_mm = pcbnew.ToMM((start.x + end.x) / 2)
+                y_mm = pcbnew.ToMM((start.y + end.y) / 2)
                 net_name = track.GetNetname()
-                layer = board.GetLayerName(track.GetLayer())
+                layer = self.board.GetLayerName(track.GetLayer())
+                description = f"Track on {net_name}"
                 
-            elif item_type == "PCB_VIA":
-                via = item.Cast()
+            elif item_class == "PCB_VIA":
+                via = item
                 pos = via.GetPosition()
+                x_mm = pcbnew.ToMM(pos.x)
+                y_mm = pcbnew.ToMM(pos.y)
                 net_name = via.GetNetname()
-                layer = "F.Cu"  # Vias span layers
+                layer = self.board.GetLayerName(via.TopLayer())
+                description = f"Via on {net_name}"
                 
-            elif item_type == "ZONE":
-                zone = item.Cast()
-                # Use zone's bounding box center
+            elif item_class == "ZONE":
+                zone = item
+                # Use zone centroid approximation
                 bbox = zone.GetBoundingBox()
-                pos = bbox.GetCenter()
+                x_mm = pcbnew.ToMM((bbox.GetLeft() + bbox.GetRight()) / 2)
+                y_mm = pcbnew.ToMM((bbox.GetTop() + bbox.GetBottom()) / 2)
                 net_name = zone.GetNetname()
-                layer = board.GetLayerName(zone.GetLayer())
-            
+                layer = self.board.GetLayerName(zone.GetLayer())
+                description = f"Zone on {net_name}"
+                
             else:
                 wx.MessageBox(
-                    f"Selected item type '{item_type}' not supported.\n"
+                    f"Cannot pick from item type: {item_class}\n"
                     "Please select a pad, track, via, or zone.",
                     "Pick from PCB",
                     wx.OK | wx.ICON_WARNING
                 )
                 return
             
-            if pos is None:
-                return
-            
-            # Convert to mm and populate fields
-            x_mm = pcbnew.ToMM(pos.x)
-            y_mm = pcbnew.ToMM(pos.y)
-            
+            # Populate the input fields
+            self.txt_net.SetValue(net_name)
             self.spin_x.SetValue(x_mm)
             self.spin_y.SetValue(y_mm)
-            self.txt_net.SetValue(net_name)
+            self.txt_desc.SetValue(description)
             
-            # Set layer in dropdown if it exists
+            # Set layer in dropdown
             layer_idx = self.choice_layer.FindString(layer)
             if layer_idx != wx.NOT_FOUND:
                 self.choice_layer.SetSelection(layer_idx)
             
             wx.MessageBox(
-                f"Imported from {item_type}:\n"
-                f"  Position: ({x_mm:.2f}, {y_mm:.2f}) mm\n"
+                f"Picked from PCB:\n"
                 f"  Net: {net_name}\n"
-                f"  Layer: {layer}",
+                f"  Layer: {layer}\n"
+                f"  Position: ({x_mm:.2f}, {y_mm:.2f}) mm\n\n"
+                "Set the current value and click 'Add' to create the injection point.",
                 "Pick from PCB",
                 wx.OK | wx.ICON_INFORMATION
             )
             
         except Exception as e:
             wx.MessageBox(
-                f"Failed to read selection:\n{e}\n\n"
-                "Make sure you have an item selected in the PCB Editor.",
-                "Pick from PCB Error",
+                f"Error picking from PCB:\n{e}",
+                "Pick from PCB",
                 wx.OK | wx.ICON_ERROR
             )
-                
+    
     def _load_from_config(self):
         """Load from config."""
         self._refresh_list()
@@ -657,16 +677,11 @@ class ComponentPowerPanel(StyledPanel):
     
     def _bind_events(self):
         """Bind events."""
-        self.Bind(wx.EVT_CLOSE, self._on_window_close)
         self.btn_add.Bind(wx.EVT_BUTTON, self._on_add)
         self.btn_remove.Bind(wx.EVT_BUTTON, self._on_remove)
         self.btn_import.Bind(wx.EVT_BUTTON, self._on_import)
         self.btn_auto.Bind(wx.EVT_BUTTON, self._on_auto)
     
-    def _on_window_close(self, event):
-        """Handle window close."""
-        self.Destroy()
-
     def _on_add(self, event):
         """Add or update component power."""
         ref = self.txt_ref.GetValue().strip()
@@ -845,6 +860,380 @@ class ProgressDialog(wx.Dialog if HAS_WX else object):
         return self._cancelled
 
 
+class StackupPanel(StyledPanel):
+    """Panel for PCB stackup configuration."""
+    
+    def __init__(self, parent, config: ThermalAnalysisConfig, pcb_data: Optional[PCBData] = None):
+        super().__init__(parent)
+        self.config = config
+        self.pcb_data = pcb_data
+        self._create_controls()
+        self._create_layout()
+        self._load_from_config()
+    
+    def _create_controls(self):
+        """Create controls."""
+        # Stackup list
+        self.list_ctrl = wx.ListCtrl(
+            self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL
+        )
+        self.list_ctrl.InsertColumn(0, "Layer", width=100)
+        self.list_ctrl.InsertColumn(1, "Type", width=80)
+        self.list_ctrl.InsertColumn(2, "Thickness (µm)", width=100)
+        self.list_ctrl.InsertColumn(3, "Material", width=120)
+        
+        self.list_ctrl.SetBackgroundColour(hex_to_wx_color(COLORS['bg_input']))
+        self.list_ctrl.SetForegroundColour(hex_to_wx_color(COLORS['fg_text']))
+        
+        # Substrate material dropdown
+        self.lbl_substrate = wx.StaticText(self, label="Substrate Material:")
+        self.lbl_substrate.SetForegroundColour(hex_to_wx_color(COLORS['fg_label']))
+        
+        substrate_choices = ['FR4', 'FR4_HIGH_TG', 'POLYIMIDE', 'ROGERS_4350B', 'ROGERS_4003C', 
+                           'CERAMIC_ALUMINA', 'CERAMIC_ALN']
+        self.choice_substrate = StyledChoice(self, choices=substrate_choices)
+        
+        # Surface finish dropdown
+        self.lbl_finish = wx.StaticText(self, label="Surface Finish:")
+        self.lbl_finish.SetForegroundColour(hex_to_wx_color(COLORS['fg_label']))
+        
+        finish_choices = ['HASL', 'ENIG', 'OSP', 'IMMERSION_SILVER', 'IMMERSION_TIN', 'BARE_COPPER']
+        self.choice_finish = StyledChoice(self, choices=finish_choices)
+        
+        # Solder mask color
+        self.lbl_mask = wx.StaticText(self, label="Solder Mask:")
+        self.lbl_mask.SetForegroundColour(hex_to_wx_color(COLORS['fg_label']))
+        
+        mask_choices = ['GREEN', 'BLACK', 'WHITE', 'RED', 'BLUE', 'YELLOW', 'MATTE_BLACK']
+        self.choice_mask = StyledChoice(self, choices=mask_choices)
+        
+        # Total thickness
+        self.lbl_thickness = wx.StaticText(self, label="Total Thickness (mm):")
+        self.lbl_thickness.SetForegroundColour(hex_to_wx_color(COLORS['fg_label']))
+        self.spin_thickness = wx.SpinCtrlDouble(self, min=0.2, max=5.0, initial=1.6, inc=0.1)
+        
+        # Apply button
+        self.btn_apply = StyledButton(self, "Apply Changes")
+        self.btn_apply.Bind(wx.EVT_BUTTON, self._on_apply)
+    
+    def _create_layout(self):
+        """Create layout."""
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        title = wx.StaticText(self, label="PCB Stackup Configuration")
+        title.SetFont(title.GetFont().Bold())
+        title.SetForegroundColour(hex_to_wx_color(COLORS['success']))
+        main_sizer.Add(title, 0, wx.ALL, 5)
+        
+        # Stackup list
+        main_sizer.Add(self.list_ctrl, 1, wx.EXPAND | wx.ALL, 5)
+        
+        # Options grid
+        grid = wx.FlexGridSizer(rows=0, cols=2, vgap=8, hgap=10)
+        grid.AddGrowableCol(1)
+        
+        grid.Add(self.lbl_substrate, 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(self.choice_substrate, 0, wx.EXPAND)
+        
+        grid.Add(self.lbl_finish, 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(self.choice_finish, 0, wx.EXPAND)
+        
+        grid.Add(self.lbl_mask, 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(self.choice_mask, 0, wx.EXPAND)
+        
+        grid.Add(self.lbl_thickness, 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(self.spin_thickness, 0, wx.EXPAND)
+        
+        main_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
+        main_sizer.Add(self.btn_apply, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
+        
+        self.SetSizer(main_sizer)
+    
+    def _load_from_config(self):
+        """Load from config."""
+        stackup = self.config.stackup
+        
+        # Populate list
+        self.list_ctrl.DeleteAllItems()
+        row = 0
+        
+        for layer, thickness in stackup.copper_thickness_um.items():
+            idx = self.list_ctrl.InsertItem(row, layer)
+            self.list_ctrl.SetItem(idx, 1, "Copper")
+            self.list_ctrl.SetItem(idx, 2, f"{thickness:.1f}")
+            self.list_ctrl.SetItem(idx, 3, "Copper")
+            row += 1
+        
+        for i, thickness in enumerate(stackup.dielectric_thickness_um):
+            idx = self.list_ctrl.InsertItem(row, f"Dielectric {i+1}")
+            self.list_ctrl.SetItem(idx, 1, "Dielectric")
+            self.list_ctrl.SetItem(idx, 2, f"{thickness:.1f}")
+            self.list_ctrl.SetItem(idx, 3, stackup.substrate_material)
+            row += 1
+        
+        # Set dropdowns
+        substrate_idx = self.choice_substrate.FindString(stackup.substrate_material)
+        if substrate_idx != wx.NOT_FOUND:
+            self.choice_substrate.SetSelection(substrate_idx)
+        
+        finish_idx = self.choice_finish.FindString(stackup.surface_finish)
+        if finish_idx != wx.NOT_FOUND:
+            self.choice_finish.SetSelection(finish_idx)
+        
+        mask_idx = self.choice_mask.FindString(stackup.solder_mask_color)
+        if mask_idx != wx.NOT_FOUND:
+            self.choice_mask.SetSelection(mask_idx)
+        
+        self.spin_thickness.SetValue(stackup.total_thickness_mm)
+    
+    def _on_apply(self, event):
+        """Apply changes to config."""
+        self.config.stackup.substrate_material = self.choice_substrate.GetStringSelection()
+        self.config.stackup.surface_finish = self.choice_finish.GetStringSelection()
+        self.config.stackup.solder_mask_color = self.choice_mask.GetStringSelection()
+        self.config.stackup.total_thickness_mm = self.spin_thickness.GetValue()
+        
+        wx.MessageBox("Stackup changes applied.", "Stackup", wx.OK | wx.ICON_INFORMATION)
+
+
+class MountingPanel(StyledPanel):
+    """Panel for mounting points and heatsink configuration."""
+    
+    def __init__(self, parent, config: ThermalAnalysisConfig, pcb_data: Optional[PCBData] = None):
+        super().__init__(parent)
+        self.config = config
+        self.pcb_data = pcb_data
+        self._create_controls()
+        self._create_layout()
+        self._bind_events()
+        self._load_from_config()
+    
+    def _create_controls(self):
+        """Create controls."""
+        # Mounting points list
+        self.mounting_list = wx.ListCtrl(
+            self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL
+        )
+        self.mounting_list.InsertColumn(0, "ID", width=60)
+        self.mounting_list.InsertColumn(1, "X (mm)", width=60)
+        self.mounting_list.InsertColumn(2, "Y (mm)", width=60)
+        self.mounting_list.InsertColumn(3, "Diameter", width=70)
+        self.mounting_list.InsertColumn(4, "Type", width=80)
+        self.mounting_list.InsertColumn(5, "Interface", width=100)
+        self.mounting_list.InsertColumn(6, "Temp (°C)", width=70)
+        
+        self.mounting_list.SetBackgroundColour(hex_to_wx_color(COLORS['bg_input']))
+        self.mounting_list.SetForegroundColour(hex_to_wx_color(COLORS['fg_text']))
+        
+        # Input fields for mounting points
+        self.spin_mp_x = wx.SpinCtrlDouble(self, min=-500, max=500, initial=0, inc=0.1)
+        self.spin_mp_y = wx.SpinCtrlDouble(self, min=-500, max=500, initial=0, inc=0.1)
+        self.spin_mp_dia = wx.SpinCtrlDouble(self, min=0.5, max=20, initial=3.2, inc=0.1)
+        
+        contact_choices = ['conductive', 'isolative']
+        self.choice_contact = StyledChoice(self, choices=contact_choices)
+        
+        interface_choices = ['THERMAL_PASTE_STANDARD', 'THERMAL_PASTE_HIGH', 'THERMAL_PAD', 
+                            'THERMAL_ADHESIVE', 'INDIUM_FOIL']
+        self.choice_interface = StyledChoice(self, choices=interface_choices)
+        
+        self.spin_mp_temp = wx.SpinCtrlDouble(self, min=-200, max=300, initial=25, inc=1)
+        self.chk_fixed_temp = wx.CheckBox(self, label="Fixed Temp")
+        
+        # Buttons
+        self.btn_add_mp = StyledButton(self, "Add Mounting Point")
+        self.btn_remove_mp = StyledButton(self, "Remove")
+        self.btn_detect_holes = StyledButton(self, "Detect from PCB")
+        
+        # Heatsinks list
+        self.heatsink_list = wx.ListCtrl(
+            self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL
+        )
+        self.heatsink_list.InsertColumn(0, "ID", width=60)
+        self.heatsink_list.InsertColumn(1, "Material", width=100)
+        self.heatsink_list.InsertColumn(2, "Thickness", width=70)
+        self.heatsink_list.InsertColumn(3, "Fins", width=50)
+        self.heatsink_list.InsertColumn(4, "Connection", width=100)
+        
+        self.heatsink_list.SetBackgroundColour(hex_to_wx_color(COLORS['bg_input']))
+        self.heatsink_list.SetForegroundColour(hex_to_wx_color(COLORS['fg_text']))
+        
+        self.btn_add_hs = StyledButton(self, "Add Heatsink")
+        self.btn_remove_hs = StyledButton(self, "Remove")
+    
+    def _create_layout(self):
+        """Create layout."""
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # Mounting points section
+        mp_title = wx.StaticText(self, label="Mounting Points (Thermal Interfaces)")
+        mp_title.SetFont(mp_title.GetFont().Bold())
+        mp_title.SetForegroundColour(hex_to_wx_color(COLORS['success']))
+        main_sizer.Add(mp_title, 0, wx.ALL, 5)
+        
+        main_sizer.Add(self.mounting_list, 1, wx.EXPAND | wx.ALL, 5)
+        
+        # Input row for mounting points
+        mp_input = wx.BoxSizer(wx.HORIZONTAL)
+        mp_input.Add(wx.StaticText(self, label="X:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        mp_input.Add(self.spin_mp_x, 0, wx.LEFT, 3)
+        mp_input.Add(wx.StaticText(self, label="Y:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+        mp_input.Add(self.spin_mp_y, 0, wx.LEFT, 3)
+        mp_input.Add(wx.StaticText(self, label="Dia:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 8)
+        mp_input.Add(self.spin_mp_dia, 0, wx.LEFT, 3)
+        mp_input.Add(self.choice_contact, 0, wx.LEFT, 8)
+        mp_input.Add(self.choice_interface, 0, wx.LEFT, 5)
+        main_sizer.Add(mp_input, 0, wx.EXPAND | wx.ALL, 5)
+        
+        mp_input2 = wx.BoxSizer(wx.HORIZONTAL)
+        mp_input2.Add(self.chk_fixed_temp, 0, wx.ALIGN_CENTER_VERTICAL)
+        mp_input2.Add(self.spin_mp_temp, 0, wx.LEFT, 5)
+        mp_input2.Add(self.btn_add_mp, 0, wx.LEFT, 20)
+        mp_input2.Add(self.btn_remove_mp, 0, wx.LEFT, 5)
+        mp_input2.Add(self.btn_detect_holes, 0, wx.LEFT, 10)
+        main_sizer.Add(mp_input2, 0, wx.ALL, 5)
+        
+        # Heatsinks section
+        hs_title = wx.StaticText(self, label="Heatsinks (from User.1 layer)")
+        hs_title.SetFont(hs_title.GetFont().Bold())
+        hs_title.SetForegroundColour(hex_to_wx_color(COLORS['success']))
+        main_sizer.Add(hs_title, 0, wx.ALL | wx.TOP, 10)
+        
+        main_sizer.Add(self.heatsink_list, 1, wx.EXPAND | wx.ALL, 5)
+        
+        hs_btns = wx.BoxSizer(wx.HORIZONTAL)
+        hs_btns.Add(self.btn_add_hs, 0)
+        hs_btns.Add(self.btn_remove_hs, 0, wx.LEFT, 5)
+        main_sizer.Add(hs_btns, 0, wx.ALL, 5)
+        
+        # Info text
+        info = wx.StaticText(
+            self, 
+            label="Tip: Draw heatsink outlines on User.1 layer in KiCad. They will be auto-detected."
+        )
+        info.SetForegroundColour(hex_to_wx_color(COLORS['warning']))
+        main_sizer.Add(info, 0, wx.ALL, 5)
+        
+        self.SetSizer(main_sizer)
+    
+    def _bind_events(self):
+        """Bind events."""
+        self.btn_add_mp.Bind(wx.EVT_BUTTON, self._on_add_mounting)
+        self.btn_remove_mp.Bind(wx.EVT_BUTTON, self._on_remove_mounting)
+        self.btn_detect_holes.Bind(wx.EVT_BUTTON, self._on_detect_holes)
+        self.btn_add_hs.Bind(wx.EVT_BUTTON, self._on_add_heatsink)
+        self.btn_remove_hs.Bind(wx.EVT_BUTTON, self._on_remove_heatsink)
+    
+    def _load_from_config(self):
+        """Load from config."""
+        self._refresh_mounting_list()
+        self._refresh_heatsink_list()
+    
+    def _refresh_mounting_list(self):
+        """Refresh mounting points list."""
+        self.mounting_list.DeleteAllItems()
+        for i, mp in enumerate(self.config.mounting_points):
+            idx = self.mounting_list.InsertItem(i, mp.point_id)
+            self.mounting_list.SetItem(idx, 1, f"{mp.x_mm:.1f}")
+            self.mounting_list.SetItem(idx, 2, f"{mp.y_mm:.1f}")
+            self.mounting_list.SetItem(idx, 3, f"{mp.hole_diameter_mm:.1f}")
+            self.mounting_list.SetItem(idx, 4, mp.contact_type)
+            self.mounting_list.SetItem(idx, 5, mp.interface_material)
+            temp_str = f"{mp.interface_temp_c:.1f}" if mp.interface_temp_c is not None else "-"
+            self.mounting_list.SetItem(idx, 6, temp_str)
+    
+    def _refresh_heatsink_list(self):
+        """Refresh heatsinks list."""
+        self.heatsink_list.DeleteAllItems()
+        for i, hs in enumerate(self.config.heatsinks):
+            idx = self.heatsink_list.InsertItem(i, hs.heatsink_id)
+            self.heatsink_list.SetItem(idx, 1, hs.material)
+            self.heatsink_list.SetItem(idx, 2, f"{hs.thickness_mm:.1f}")
+            self.heatsink_list.SetItem(idx, 3, str(hs.fin_count))
+            self.heatsink_list.SetItem(idx, 4, hs.connection_type)
+    
+    def _on_add_mounting(self, event):
+        """Add mounting point."""
+        from ..core.config import MountingPoint
+        
+        point_id = f"MP{len(self.config.mounting_points) + 1}"
+        temp = self.spin_mp_temp.GetValue() if self.chk_fixed_temp.GetValue() else None
+        
+        mp = MountingPoint(
+            point_id=point_id,
+            x_mm=self.spin_mp_x.GetValue(),
+            y_mm=self.spin_mp_y.GetValue(),
+            hole_diameter_mm=self.spin_mp_dia.GetValue(),
+            contact_type=self.choice_contact.GetStringSelection(),
+            interface_material=self.choice_interface.GetStringSelection(),
+            interface_temp_c=temp
+        )
+        self.config.mounting_points.append(mp)
+        self._refresh_mounting_list()
+    
+    def _on_remove_mounting(self, event):
+        """Remove selected mounting point."""
+        idx = self.mounting_list.GetFirstSelected()
+        if idx >= 0 and idx < len(self.config.mounting_points):
+            del self.config.mounting_points[idx]
+            self._refresh_mounting_list()
+    
+    def _on_detect_holes(self, event):
+        """Detect mounting holes from PCB."""
+        if not self.pcb_data or not self.pcb_data.mounting_holes:
+            wx.MessageBox(
+                "No mounting holes found in PCB.\n"
+                "Add mounting hole footprints to your design.",
+                "Detect Mounting Holes",
+                wx.OK | wx.ICON_INFORMATION
+            )
+            return
+        
+        from ..core.config import MountingPoint
+        
+        count = 0
+        for hole in self.pcb_data.mounting_holes:
+            # Skip if already exists at this location
+            exists = any(
+                abs(mp.x_mm - hole.position.x) < 0.5 and abs(mp.y_mm - hole.position.y) < 0.5
+                for mp in self.config.mounting_points
+            )
+            if exists:
+                continue
+            
+            mp = MountingPoint(
+                point_id=hole.hole_id,
+                x_mm=hole.position.x,
+                y_mm=hole.position.y,
+                hole_diameter_mm=hole.drill_mm,
+                contact_type="conductive" if hole.is_plated else "isolative",
+                interface_material="THERMAL_PASTE_STANDARD"
+            )
+            self.config.mounting_points.append(mp)
+            count += 1
+        
+        self._refresh_mounting_list()
+        wx.MessageBox(f"Added {count} mounting points from PCB.", "Detect Complete")
+    
+    def _on_add_heatsink(self, event):
+        """Add heatsink (placeholder for now)."""
+        wx.MessageBox(
+            "To add a heatsink:\n"
+            "1. Draw a polygon on User.1 layer in KiCad\n"
+            "2. Run 'Detect from PCB' (coming soon)\n\n"
+            "Heatsinks define areas with enhanced thermal conductivity.",
+            "Add Heatsink",
+            wx.OK | wx.ICON_INFORMATION
+        )
+    
+    def _on_remove_heatsink(self, event):
+        """Remove selected heatsink."""
+        idx = self.heatsink_list.GetFirstSelected()
+        if idx >= 0 and idx < len(self.config.heatsinks):
+            del self.config.heatsinks[idx]
+            self._refresh_heatsink_list()
+
+
 class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
     """Main dialog for TVAC Thermal Analyzer."""
     
@@ -910,22 +1299,20 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
         self.notebook.AddPage(self.settings_panel, "Simulation")
         
         # Tab 2: Current Injection
-        self.current_panel = CurrentInjectionPanel(self.notebook, self.config, self.pcb_data)
+        self.current_panel = CurrentInjectionPanel(self.notebook, self.config, self.pcb_data, board=self.board)
         self.notebook.AddPage(self.current_panel, "Current")
         
         # Tab 3: Component Power
         self.power_panel = ComponentPowerPanel(self.notebook, self.config, self.pcb_data, pcb_path=self.pcb_path)
         self.notebook.AddPage(self.power_panel, "Components")
         
-        # Tab 4: Stackup (placeholder)
-        stackup_panel = StyledPanel(self.notebook)
-        wx.StaticText(stackup_panel, label="PCB Stackup Configuration\n(Auto-extracted from board)")
-        self.notebook.AddPage(stackup_panel, "Stackup")
+        # Tab 4: Stackup
+        self.stackup_panel = StackupPanel(self.notebook, self.config, self.pcb_data)
+        self.notebook.AddPage(self.stackup_panel, "Stackup")
         
-        # Tab 5: Mounting/Heatsinks (placeholder)
-        mounting_panel = StyledPanel(self.notebook)
-        wx.StaticText(mounting_panel, label="Mounting Points and Heatsinks\n(Define thermal interfaces)")
-        self.notebook.AddPage(mounting_panel, "Mounting")
+        # Tab 5: Mounting/Heatsinks
+        self.mounting_panel = MountingPanel(self.notebook, self.config, self.pcb_data)
+        self.notebook.AddPage(self.mounting_panel, "Mounting")
         
         main_sizer.Add(self.notebook, 1, wx.EXPAND | wx.ALL, 5)
         
@@ -967,6 +1354,7 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
         self.btn_export.Bind(wx.EVT_BUTTON, self._on_export)
         self.btn_save.Bind(wx.EVT_BUTTON, self._on_save)
         self.btn_close.Bind(wx.EVT_BUTTON, self._on_close)
+        self.Bind(wx.EVT_CLOSE, self._on_window_close)
     
     def _apply_theme(self):
         """Apply dark theme."""
@@ -1082,18 +1470,21 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
                 
                 report_config = ReportConfig(
                     title="TVAC Thermal Analysis Report",
-                    project_name="TVAC Thermal Analysis",
+                    project_name=self.config.stackup.substrate_material,
                     author="TVAC Thermal Analyzer",
                 )
                 
-                generator = ThermalReportGenerator(report_config)
-                # Note: generate_report requires mesh and current_results which we may not have stored
-                # For now, use a simplified call that handles missing data
+                generator = ThermalReportGenerator(config=report_config)
+                
+                # Get mesh from thermal analysis engine if available
+                mesh = None
+                current_result = None
+                
                 success = generator.generate_report(
                     output_path=path,
                     thermal_results=self.thermal_result,
-                    current_results=None,  # Would need to store this from simulation
-                    mesh=None,  # Would need to store this from simulation
+                    current_results=current_result,
+                    mesh=mesh,
                     analysis_config=self.config,
                     pcb_data=self.pcb_data
                 )
@@ -1101,7 +1492,7 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
                 if success:
                     wx.MessageBox(f"Report saved to:\n{path}", "Export Complete")
                 else:
-                    wx.MessageBox("Report generation failed", "Error", wx.ICON_ERROR)
+                    wx.MessageBox("Report generation failed.", "Error", wx.ICON_ERROR)
                 
             except Exception as e:
                 self.logger.exception(f"Report generation failed: {e}")
@@ -1119,8 +1510,20 @@ class TVACThermalAnalyzerDialog(wx.Dialog if HAS_WX else object):
             wx.MessageBox("Failed to save configuration.", "Error", wx.ICON_ERROR)
     
     def _on_close(self, event):
-        """Close dialog."""
+        """Close dialog via button click."""
         self.Close()
+    
+    def _on_window_close(self, event):
+        """Handle window close event (X button or Close() call)."""
+        # Save config before closing
+        try:
+            self.settings_panel.save_to_config()
+            self.config_manager.save()
+        except Exception:
+            pass
+        
+        # Destroy the dialog
+        self.Destroy()
 
 
 # Import datetime for report generation

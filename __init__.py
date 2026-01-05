@@ -38,6 +38,15 @@ def get_version_string() -> str:
     return f"{VERSION_INFO['major']}.{VERSION_INFO['minor']}.{VERSION_INFO['patch']}"
 
 
+#
+# IMPORTANT (KiCad plugin discovery):
+# KiCad imports Python *packages* found in the plugins folder at startup.
+# That means THIS FILE runs during plugin discovery.
+#
+# Keep imports here lightweight: do NOT import subpackages that pull optional
+# dependencies (numpy/scipy/reportlab/etc.), or KiCad may fail to import the
+# package and the plugin will not appear.
+#
 def _register_with_kicad() -> None:
     """Register the action plugin when running inside KiCad."""
     try:
@@ -59,18 +68,6 @@ def _register_with_kicad() -> None:
 _register_with_kicad()
 del _register_with_kicad
 
-#
-# IMPORTANT (KiCad plugin discovery):
-# KiCad imports Python *packages* found in the plugins folder at startup.
-# That means THIS FILE runs during plugin discovery.
-#
-# Keep imports here lightweight: do NOT import subpackages that pull optional
-# dependencies (numpy/scipy/reportlab/etc.), or KiCad may fail to import the
-# package and the plugin will not appear.
-#
-# NOTE: Plugin registration is handled by tvac_thermal_analyzer_plugin.py
-# Do NOT register here to avoid duplicate menu entries.
-#
 
 __all__ = [
     "__version__",

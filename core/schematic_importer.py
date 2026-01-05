@@ -1,7 +1,7 @@
 """
 Schematic importer (KiCad .kicad_sch)
 ------------------------------------
-Extracts symbol properties (Reference  POWER_DISSIPATION) from the schematic.
+Extracts symbol properties (Reference, POWER_DISSIPATION) from the schematic.
 
 This is intentionally dependency-free: KiCad schematics are S-expressions.
 We parse just enough to reliably read (property "<n>" "<VALUE>" ...).
@@ -10,7 +10,7 @@ We parse just enough to reliably read (property "<n>" "<VALUE>" ...).
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 def find_schematic_for_pcb(pcb_path: str) -> Optional[str]:
@@ -45,7 +45,7 @@ def _parse_power_value(value_str: str) -> float:
     num = ""
     unit = ""
     for ch in s:
-        if (ch.isdigit() or ch in ".-e"):
+        if ch.isdigit() or ch in ".-e+":
             num += ch  # FIXED: was num = ch
         else:
             unit += ch  # FIXED: was unit = ch
@@ -126,12 +126,16 @@ def _parse_sexpr(tokens: List[Any]) -> Any:
             return lst
         if tok == ")":
             return None
-        kind, val = tok
-        return val
+        if isinstance(tok, tuple) and len(tok) == 2:
+            kind, val = tok
+            return val
+        return tok
 
     out = []
     while idx < len(tokens):
-        out.append(parse_one())
+        result = parse_one()
+        if result is not None:
+            out.append(result)
     return out
 
 

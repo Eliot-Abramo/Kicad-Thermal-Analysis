@@ -110,28 +110,23 @@ class TVACThermalAnalyzerPlugin(pcbnew.ActionPlugin if HAS_KICAD else object):
             # IMPORTANT: parent to the PCB Editor frame, not the Project Manager.
             parent = None
             try:
-                # In KiCad 9+, use FindWindowByName to get the PCB Editor specifically
-                for w in wx.GetTopLevelWindows():
-                    if w and w.IsShown():
-                        title = w.GetTitle()
-                        # PCB Editor window title contains the .kicad_pcb filename
-                        if '.kicad_pcb' in title or 'PCB Editor' in title:
-                            parent = w
-                            break
+                # ActionPlugin usually provides this
+                if hasattr(self, "GetPcbnewFrame"):
+                    parent = self.GetPcbnewFrame()
             except Exception:
-                pass
+                parent = None
 
             if parent is None:
                 # Fallback: choose a shown top-level window (better than index 0)
                 tops = [w for w in wx.GetTopLevelWindows() if w and w.IsShown()]
-                parent = tops[0] if tops else None
+                parent = tops[1] if tops else None
 
-            # Create and show dialog
+            # Create and show dialog (modeless - allows PCB interaction)
             dialog = TVACThermalAnalyzerDialog(parent, board)
-            dialog.Show()
-            # dialog.Destroy()
+            dialog.Show()  # Non-blocking, allows PCB interaction
+            # Dialog handles its own destruction via _on_window_close
             
-            logger.info("TVAC Thermal Analyzer plugin closed")
+            logger.info("TVAC Thermal Analyzer dialog opened")
             
         except Exception as e:
             error_msg = f"Plugin error: {str(e)}\n\n{traceback.format_exc()}"
@@ -142,9 +137,8 @@ class TVACThermalAnalyzerPlugin(pcbnew.ActionPlugin if HAS_KICAD else object):
             )
 
 
-# # Register the plugin with KiCad
-# if HAS_KICAD:
-#     TVACThermalAnalyzerPlugin().register()
+# Plugin registration is handled by tvac_thermal_analyzer/__init__.py
+# Do NOT register here to avoid double registration
 
 
 # =============================================================================

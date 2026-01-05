@@ -51,7 +51,7 @@ except ImportError:
 # Use TYPE_CHECKING to avoid circular imports
 
 if TYPE_CHECKING:
-    from ..solvers.thermal_solver import ThermalSimulationResult, ThermalFrame
+    from ..solvers.thermal_solver import ThermalResults, ThermalFrame
     from ..solvers.current_solver import CurrentDistributionResult
     from ..solvers.mesh_generator import ThermalMesh
     from ..core.config import ThermalAnalysisConfig, SimulationParameters
