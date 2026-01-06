@@ -4,73 +4,35 @@ TVAC Thermal Analyzer - Core Module
 Core data structures, configuration, and PCB extraction.
 """
 
-from .constants import (
-    PhysicalConstants,
-    ThermalMaterial,
-    MaterialsDatabase,
-    ComponentThermalData,
-    ComponentThermalDatabase,
-    PCBLayerDefaults,
-    SimulationDefaults,
+from .pcb_extractor import (
+    PCBExtractor, PCBData, Component, Point2D,
+    TraceSegment, Via, CopperPour, Pad, 
+    MountingHole, BoardOutline, UserLayerShape
 )
 
 from .config import (
-    CurrentInjectionPoint,
-    TraceCurrentOverride,
-    ComponentPowerConfig,
-    MountingPoint,
-    HeatsinkConfig,
-    PCBStackupConfig,
-    SimulationParameters,
-    ThermalAnalysisConfig,
-    ConfigManager,
+    ThermalAnalysisConfig, ConfigManager,
+    ComponentPowerConfig, HeatsinkConfig, MountingPointConfig,
+    StackupConfig, SimulationConfig, LayerMappingConfig
 )
 
-from .pcb_extractor import (
-    Point2D,
-    Point3D,
-    TraceSegment,
-    Via,
-    CopperPour,
-    Pad,
-    Component,
-    MountingHole,
-    BoardOutline,
-    UserLayerShape,
-    PCBData,
-    PCBExtractor,
+from .constants import (
+    PhysicalConstants, MaterialProperties, MaterialsDatabase,
+    PackageThermalData, ComponentThermalDatabase, SimulationDefaults
 )
 
 __all__ = [
-    # Constants
-    'PhysicalConstants',
-    'ThermalMaterial',
-    'MaterialsDatabase',
-    'ComponentThermalData',
-    'ComponentThermalDatabase',
-    'PCBLayerDefaults',
-    'SimulationDefaults',
-    # Config
-    'CurrentInjectionPoint',
-    'TraceCurrentOverride',
-    'ComponentPowerConfig',
-    'MountingPoint',
-    'HeatsinkConfig',
-    'PCBStackupConfig',
-    'SimulationParameters',
-    'ThermalAnalysisConfig',
-    'ConfigManager',
-    # PCB Extractor
-    'Point2D',
-    'Point3D',
-    'TraceSegment',
-    'Via',
-    'CopperPour',
-    'Pad',
-    'Component',
-    'MountingHole',
-    'BoardOutline',
-    'UserLayerShape',
-    'PCBData',
-    'PCBExtractor',
+    # PCB Extraction
+    'PCBExtractor', 'PCBData', 'Component', 'Point2D',
+    'TraceSegment', 'Via', 'CopperPour', 'Pad',
+    'MountingHole', 'BoardOutline', 'UserLayerShape',
+    
+    # Configuration
+    'ThermalAnalysisConfig', 'ConfigManager',
+    'ComponentPowerConfig', 'HeatsinkConfig', 'MountingPointConfig',
+    'StackupConfig', 'SimulationConfig', 'LayerMappingConfig',
+    
+    # Constants & Materials
+    'PhysicalConstants', 'MaterialProperties', 'MaterialsDatabase',
+    'PackageThermalData', 'ComponentThermalDatabase', 'SimulationDefaults',
 ]

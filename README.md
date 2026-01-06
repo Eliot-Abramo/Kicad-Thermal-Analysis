@@ -1,226 +1,158 @@
-# TVAC Thermal Analyzer for KiCad
+# TVAC Thermal Analyzer
 
-A professional-grade thermal simulation plugin for KiCad PCB Editor, designed for analyzing PCB thermal behavior under thermal-vacuum (TVAC) conditions. Ideal for space electronics, aerospace applications, and high-reliability designs.
-
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![KiCad](https://img.shields.io/badge/KiCad-9.0+-green)
-![License](https://img.shields.io/badge/license-MIT-brightgreen)
+Industrial-grade thermal analysis plugin for KiCad, designed for space electronics PCB design under Thermal Vacuum (TVAC) chamber conditions.
 
 ## Features
 
-### Thermal Simulation
-- **3D Finite Element Analysis**: Full 3D thermal modeling through PCB stackup
-- **Transient & Steady-State**: Both simulation modes with configurable duration
-- **Adaptive Mesh**: Automatic mesh refinement near traces and components
-- **Radiation Modeling**: Stefan-Boltzmann radiation for vacuum conditions
-- **Conduction**: Full anisotropic thermal conductivity modeling
+- **TVAC Simulation**: Radiation-dominated heat transfer modeling for vacuum conditions
+- **Interactive BOM-style Visualization**: Pan, zoom, and inspect PCB with thermal overlay
+- **Component Power Management**: Configure power dissipation for ICs, regulators, and passives
+- **Heatsink Configuration**: Define heatsinks via User layer polygons
+- **Mounting Point Thermal Boundaries**: Set fixed temperatures at mounting locations
+- **Transient & Steady-State Analysis**: Full time-domain or equilibrium solutions
+- **3D Stackup Modeling**: Multi-layer thermal conductance with realistic materials
+- **Professional Reporting**: PDF reports with thermal maps and component tables
 
-### Electrical Analysis
-- **Current Distribution Solver**: Kirchhoff nodal analysis for current paths
-- **Joule Heating**: Automatic I²R power dissipation calculation
-- **Via Thermal Conductance**: Through-via heat transfer modeling
-- **AC/Skin Effect**: Optional high-frequency resistance correction
+## Requirements
 
-### User Interface
-- **Dark Theme**: Professional Altium-inspired interface
-- **Point-to-Point Current Definition**: Easy current injection setup
-- **Component Power Entry**: Manual or schematic-imported power values
-- **Real-Time Progress**: Live simulation progress tracking
-- **Heat Map Visualization**: Color-coded temperature overlay
+### Required
+- KiCad 9.0 or later
+- Python 3.9+
+- wxPython (bundled with KiCad)
 
-### Reporting
-- **Professional PDF Reports**: Comprehensive analysis documentation
-- **Executive Summary**: Pass/fail assessment with key metrics
-- **Detailed Tables**: Component temperatures, hot spots, warnings
-- **Temperature History**: Time-evolution data for transient analysis
+### Optional (for enhanced performance)
+- NumPy (for Python solver)
+- SciPy (for sparse matrix solvers)
+- reportlab (for PDF report generation)
+- Pillow/PIL (for thermal map images)
+
+### Native Engine (optional, 10-100x faster)
+- GCC with OpenMP support
+- See build instructions below
 
 ## Installation
 
-### Method 1: Copy to KiCad Plugins Directory
+### Method 1: KiCad Plugin Manager (Recommended)
+1. Open KiCad
+2. Go to Plugin and Content Manager
+3. Search for "TVAC Thermal Analyzer"
+4. Click Install
 
-1. Download or clone this repository
-2. Copy the entire `tvac_thermal_analyzer` folder to your KiCad plugins directory:
-   - **Windows**: `%APPDATA%/kicad/9.0/scripting/plugins/`
-   - **Linux**: `~/.local/share/kicad/9.0/scripting/plugins/`
-   - **macOS**: `~/Library/Preferences/kicad/9.0/scripting/plugins/`
-3. Copy `tvac_thermal_analyzer_plugin.py` to the same directory
-4. Restart KiCad
+### Method 2: Manual Installation
+1. Locate your KiCad plugins directory:
+   - Windows: `%APPDATA%\kicad\9.0\scripting\plugins`
+   - macOS: `~/Library/Preferences/kicad/9.0/scripting/plugins`
+   - Linux: `~/.local/share/kicad/9.0/scripting/plugins`
 
-### Method 2: Using Package Manager (Coming Soon)
+2. Copy the `tvac_thermal_analyzer` folder to the plugins directory
 
-The plugin will be available through the KiCad Plugin and Content Manager.
+3. Restart KiCad or reload plugins (Tools → Scripting → Reload Plugins)
 
-### Dependencies
+## Usage
 
-The plugin requires the following Python packages (install via pip if not present):
+1. Open a PCB in KiCad's PCB Editor
+2. Launch via Tools → External Plugins → TVAC Thermal Analyzer
+3. Configure:
+   - **Components Tab**: Set power dissipation for heat-generating components
+   - **Heatsinks Tab**: Select layer and import heatsink polygons
+   - **Mounting Tab**: Configure thermal mounting points
+   - **Simulation Tab**: Set temperatures and solver parameters
+4. Click "Run Simulation"
+5. View results with thermal overlay on PCB
+6. Export PDF report if needed
 
+## Heatsink Definition
+
+To define heatsinks in your PCB:
+
+1. In KiCad PCB Editor, switch to a User layer (default: User.1)
+2. Draw a polygon outline around the heatsink area
+3. In the TVAC Analyzer, go to Heatsinks tab
+4. Select the layer and click "Detect Shapes"
+5. Configure material and thickness for each heatsink
+
+## Mounting Points
+
+Thermal mounting points provide heat paths to a chassis:
+
+1. Use standard mounting hole footprints in your design
+2. In TVAC Analyzer, go to Mounting tab
+3. Click "Auto-Detect Holes" to import mounting locations
+4. Set fixed temperatures for thermal boundary conditions
+
+## Building the Native Engine (Optional)
+
+For best performance, compile the C thermal engine:
+
+### Linux/macOS
 ```bash
-pip install numpy scipy reportlab
+cd tvac_thermal_analyzer/native
+./build.sh
 ```
 
-## Quick Start
-
-1. Open your PCB in KiCad's PCB Editor
-2. Go to **Tools → External Plugins → TVAC Thermal Analyzer**
-3. Configure simulation parameters in the **Simulation** tab
-4. Define current injection points in the **Current** tab
-5. Set component power dissipation in the **Components** tab
-6. Click **Run Simulation**
-7. View results or export a PDF report
-
-## Usage Guide
-
-### Simulation Settings
-
-| Parameter | Description | Recommended |
-|-----------|-------------|-------------|
-| Grid Resolution | Mesh spacing (smaller = more accurate, slower) | 0.5mm for 80x80mm boards |
-| 3D Simulation | Enable full Z-axis thermal modeling | Yes for multi-layer boards |
-| Include Radiation | Model vacuum radiation heat transfer | Yes for TVAC analysis |
-| Duration | Simulation time for transient analysis | 10-30 minutes typical |
-
-### Current Injection
-
-Define current paths through your PCB:
-- **Positive current**: Where current enters the board
-- **Negative current**: Where current exits the board
-- **Total must sum to zero** for a balanced analysis
-
-Example for a 5A power stage:
-- Input connector: +5.0 A
-- Output connector: -5.0 A
-
-### Component Power
-
-Specify power dissipation for active components:
-- Import from schematic `POWER_DISSIPATION` field
-- Manual entry for each component
-- Database lookup for common packages
-
-### Interpretation
-
-| Temperature | Status | Action |
-|-------------|--------|--------|
-| < 70°C | Safe | No action needed |
-| 70-85°C | Marginal | Review thermal design |
-| 85-100°C | Warning | Add thermal management |
-| > 100°C | Critical | Redesign required |
-
-## Technical Details
-
-### Thermal Model
-
-The solver implements the heat equation:
-
-```
-ρ·c·∂T/∂t = ∇·(k·∇T) + Q - σ·ε·(T⁴ - T_amb⁴)
+### Windows (MinGW)
+```bash
+cd tvac_thermal_analyzer\native
+build.bat
 ```
 
-Where:
-- ρ = density (kg/m³)
-- c = specific heat (J/kg·K)
-- k = thermal conductivity (W/m·K)
-- Q = heat generation (W/m³)
-- σ = Stefan-Boltzmann constant
-- ε = emissivity
-
-### Solver Method
-
-- **Spatial**: Finite difference on structured grid
-- **Temporal**: Implicit Euler (backward difference)
-- **Matrix**: Sparse LU factorization for efficiency
-- **Radiation**: Newton-Raphson iteration
-
-### Material Properties
-
-Default material properties are based on industry standards:
-- **FR4**: k = 0.3 W/(m·K), ε = 0.90
-- **Copper**: k = 401 W/(m·K), ρ = 1.68×10⁻⁸ Ω·m
-- **Solder Mask**: ε = 0.92 (green)
-
-All values are configurable through the UI.
-
-## File Structure
-
-```
-tvac_thermal_analyzer/
-├── __init__.py              # Package initialization
-├── tvac_thermal_analyzer_plugin.py  # KiCad plugin entry point
-├── core/
-│   ├── __init__.py
-│   ├── constants.py         # Physical constants & materials
-│   ├── config.py            # Configuration management
-│   └── pcb_extractor.py     # PCB geometry extraction
-├── solvers/
-│   ├── __init__.py
-│   ├── mesh_generator.py    # Thermal mesh generation
-│   ├── current_solver.py    # Electrical network solver
-│   └── thermal_solver.py    # FEM thermal solver
-├── ui/
-│   ├── __init__.py
-│   ├── main_dialog.py       # Main plugin dialog
-│   └── heat_map.py          # Visualization components
-├── utils/
-│   ├── __init__.py
-│   ├── logger.py            # Logging system
-│   └── report_generator.py  # PDF report generation
-├── resources/
-│   └── icon.png             # Plugin icon
-└── data/
-    └── (user configurations)
+### Manual Build
+```bash
+gcc -O3 -fopenmp -shared -fPIC -o libthermal_engine.so thermal_engine.c -lm
 ```
 
-## Configuration Persistence
+The plugin automatically uses the native engine if available, falling back to Python.
 
-Simulation configurations are automatically saved alongside your PCB project:
-- `<pcb_name>_tvac_thermal_config.json`
+## Configuration Files
 
-This allows you to:
-- Re-run simulations with the same settings
-- Share configurations with team members
-- Version control thermal analysis setup
+The plugin saves configuration alongside your PCB:
+- `<pcb_name>_tvac_thermal_config.json` - All settings and component power
+
+## Physical Models
+
+### Heat Transfer
+- **Conduction**: 3D finite difference through PCB stackup
+- **Radiation**: Stefan-Boltzmann to chamber walls (emissivity-based)
+- **Convection**: Disabled (vacuum conditions)
+
+### Materials Database
+- PCB substrates: FR4, Polyimide, Rogers, Ceramic, PTFE
+- Conductors: Copper, Aluminum, Gold
+- Heatsinks: Aluminum alloys, Copper
+- Thermal interfaces: Pastes, pads, gap fillers
+
+### Component Thermal Models
+- Package theta values (θja, θjc, θjb)
+- Thermal mass for transient analysis
+- Auto-estimation from footprint
 
 ## Troubleshooting
 
-### "No PCB is currently open"
-- Ensure you have a PCB file open in the PCB Editor
-- The plugin cannot run from the schematic editor
+### Plugin doesn't appear
+- Ensure Python dependencies are installed
+- Check KiCad console for import errors
+- Verify plugin folder structure
 
 ### Simulation is slow
-- Increase grid resolution (larger value = fewer nodes)
-- Disable 3D simulation for quick estimates
-- Reduce simulation duration for initial testing
+- Reduce mesh resolution (increase mm value)
+- Disable adaptive refinement
+- Build native engine for 10-100x speedup
 
-### Temperature results seem wrong
-- Verify current injection points sum to zero
-- Check component power values are in Watts
-- Ensure material properties match your stackup
-
-### Report generation fails
-- Install reportlab: `pip install reportlab`
-- Check write permissions to output directory
-
-## Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+### High temperatures
+- Check component power values
+- Verify heatsink thermal contact
+- Review mounting point boundary conditions
 
 ## License
 
-MIT License - See LICENSE file for details.
+MIT License - See LICENSE file
 
-## Support
+## Author
 
-For issues and feature requests, please use the GitHub issue tracker.
+Space Electronics Thermal Analysis Tool v2.0.0
 
 ## Acknowledgments
 
 - KiCad development team
-- ECSS/IEC TR 62380 standards for reliability data
-- Open source thermal analysis community
-
----
-
-**Note**: This tool is for engineering analysis purposes. Always validate results with physical testing for critical applications.
+- Interactive BOM for visualization inspiration
+- Thermal modeling community

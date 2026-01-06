@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Background -->
+  <rect x="2" y="2" width="20" height="20" rx="2" fill="#1976D2"/>
+  
+  <!-- PCB outline -->
+  <rect x="4" y="4" width="16" height="16" rx="1" fill="#263238" stroke="#4CAF50" stroke-width="0.5"/>
+  
+  <!-- Heat gradient (thermal representation) -->
+  <defs>
+    <linearGradient id="thermal" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2196F3"/>
+      <stop offset="50%" stop-color="#FFEB3B"/>
+      <stop offset="100%" stop-color="#F44336"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Thermal pattern -->
+  <rect x="6" y="6" width="12" height="12" rx="1" fill="url(#thermal)" opacity="0.7"/>
+  
+  <!-- Component symbol -->
+  <rect x="8" y="9" width="4" height="6" fill="#37474F" stroke="#B0BEC5" stroke-width="0.3"/>
+  <line x1="10" y1="7" x2="10" y2="9" stroke="#B0BEC5" stroke-width="0.5"/>
+  <line x1="10" y1="15" x2="10" y2="17" stroke="#B0BEC5" stroke-width="0.5"/>
+  
+  <!-- Temperature indicator -->
+  <circle cx="15" cy="12" r="3" fill="none" stroke="#FFFFFF" stroke-width="0.5"/>
+  <text x="15" y="13.5" font-size="4" fill="#FFFFFF" text-anchor="middle" font-family="sans-serif">T</text>
+</svg>

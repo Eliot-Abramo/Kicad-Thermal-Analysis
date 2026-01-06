@@ -1,30 +1,34 @@
 """
 TVAC Thermal Analyzer - UI Module
 =================================
-User interface components for KiCad integration.
+User interface components and dialogs.
 """
 
-from .main_dialog import (
-    TVACThermalAnalyzerDialog,
-    ProgressDialog,
+from .design_system import (
+    Colors, Spacing, Fonts,
+    BaseDialog, BaseFrame, IconButton, AccentButton,
+    InfoBanner, SectionHeader, StatusIndicator, SearchBox,
+    LabeledControl, ProgressDialog, TabPanel
 )
 
-from .heat_map import (
-    ColorMap,
-    ThermalColorMapper,
-    HeatMapRenderer,
-    HeatMapConfig,
+from .pcb_visualization import (
+    PCBVisualizationPanel, LayerTogglePanel, VisualizationLayer
 )
 
-# Alias for compatibility
-HeatMapOverlay = HeatMapRenderer
+from .main_dialog import MainDialog
+from .results_viewer import ResultsViewerDialog
 
 __all__ = [
-    'TVACThermalAnalyzerDialog',
-    'ProgressDialog',
-    'ColorMap',
-    'ThermalColorMapper',
-    'HeatMapRenderer',
-    'HeatMapConfig',
-    'HeatMapOverlay',
+    # Design System
+    'Colors', 'Spacing', 'Fonts',
+    'BaseDialog', 'BaseFrame', 'IconButton', 'AccentButton',
+    'InfoBanner', 'SectionHeader', 'StatusIndicator', 'SearchBox',
+    'LabeledControl', 'ProgressDialog', 'TabPanel',
+    
+    # Visualization
+    'PCBVisualizationPanel', 'LayerTogglePanel', 'VisualizationLayer',
+    
+    # Dialogs
+    'MainDialog',
+    'ResultsViewerDialog',
 ]
