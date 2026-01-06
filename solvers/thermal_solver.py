@@ -351,11 +351,11 @@ class ThermalSolver:
                     # Need to re-apply BCs to factored matrix for fixed temp nodes
                     # For simplicity, use iterative for now
                     self.T, info = sparse_linalg.cg(LHS_bc, RHS_bc, x0=self.T, 
-                                                    tol=self.params.convergence_criterion,
+                                                    rtol=self.params.convergence_criterion,
                                                     maxiter=100)
                 else:
                     self.T, info = sparse_linalg.cg(LHS_bc, RHS_bc, x0=self.T,
-                                                    tol=self.params.convergence_criterion,
+                                                    rtol=self.params.convergence_criterion,
                                                     maxiter=100)
                 
                 t += dt
@@ -458,7 +458,7 @@ class ThermalSolver:
             
             # Solve linear system
             K_bc, Q_bc = self._apply_boundary_conditions(self.K_matrix, Q_total.copy())
-            T, _ = sparse_linalg.cg(K_bc, Q_bc, x0=T, maxiter=100)
+            T, _ = sparse_linalg.cg(K_bc, Q_bc, x0=T, rtol=1e-6, maxiter=100)
             
             # Check convergence
             residual = np.max(np.abs(T - T_old))

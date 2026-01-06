@@ -70,7 +70,7 @@ if errorlevel 1 (
 )
 
 echo [INFO] Verifying import...
-"%PY%" -c "import reportlab; import reportlab.lib; print('reportlab OK:', reportlab.__version__)"
+"%PY%" -c "from reportlab.lib import colors; import reportlab.lib; print('reportlab OK:', reportlab.__version__)"
 if errorlevel 1 (
   echo [ERROR] reportlab still not importable in KiCad's Python.
   exit /b 1
