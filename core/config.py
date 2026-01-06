@@ -113,6 +113,7 @@ class SimulationConfig:
     include_radiation: bool = True
     include_ac_effects: bool = False
     mode: str = "steady_state"  # steady_state, transient
+    heat_source_mode: str = "component_power"  # component_power, current_injection
     duration_s: float = 600.0
     timestep_s: float = 0.5
     output_interval_s: float = 1.0

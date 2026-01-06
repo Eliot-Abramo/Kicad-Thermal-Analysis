@@ -409,7 +409,14 @@ class MeshGenerator:
             pass
     
     def _add_heat_sources(self, mesh: ThermalMesh):
-        """Add heat sources from component power."""
+        """Add heat sources based on simulation mode."""
+        if self.config.simulation.heat_source_mode == "current_injection":
+            self._add_current_heat_sources(mesh)
+        else:
+            self._add_component_heat_sources(mesh)
+    
+    def _add_component_heat_sources(self, mesh: ThermalMesh):
+        """Add heat sources from component power dissipation."""
         for cp in self.config.component_power:
             if cp.power_w <= 0:
                 continue
@@ -441,6 +448,133 @@ class MeshGenerator:
                 power_per_node = cp.power_w / len(nodes_in_footprint)
                 for node in nodes_in_footprint:
                     node.heat_source += power_per_node
+    
+    def _add_current_heat_sources(self, mesh: ThermalMesh):
+        """Add heat sources from current injection (I²R Joule heating).
+        
+        This simplified model:
+        1. Calculates total current flow from injection points
+        2. Distributes heat along trace paths (simplified uniform model)
+        3. Uses copper resistivity and trace geometry for I²R calculation
+        """
+        from ..core.constants import PhysicalConstants
+        
+        # Get current injection points
+        injection_points = self.config.current_injection_points
+        if not injection_points:
+            return
+        
+        # Calculate total current (should balance for valid simulation)
+        total_current_in = sum(cp.current_a for cp in injection_points if cp.current_a > 0)
+        total_current_out = sum(abs(cp.current_a) for cp in injection_points if cp.current_a < 0)
+        
+        # Use average for heat calculation
+        avg_current = (total_current_in + total_current_out) / 2
+        if avg_current <= 0:
+            return
+        
+        # Get copper properties
+        copper_resistivity = PhysicalConstants.COPPER_RESISTIVITY  # Ω·m
+        
+        # Calculate total trace resistance and heat
+        # This is a simplified model - assumes current flows uniformly through traces
+        total_heat_w = 0.0
+        trace_segments = []
+        
+        for trace in self.pcb_data.traces:
+            # Calculate trace length
+            dx = trace.end.x - trace.start.x
+            dy = trace.end.y - trace.start.y
+            length_m = math.sqrt(dx*dx + dy*dy) * 1e-3  # mm to m
+            
+            if length_m < 1e-6:
+                continue
+            
+            # Get copper thickness (assume 35um = 1oz)
+            copper_thickness_m = 35e-6
+            
+            # Trace cross-section area
+            width_m = trace.width * 1e-3  # mm to m
+            area_m2 = width_m * copper_thickness_m
+            
+            if area_m2 < 1e-12:
+                continue
+            
+            # Trace resistance R = ρL/A
+            resistance = copper_resistivity * length_m / area_m2
+            
+            # Power P = I²R (assuming current flows through this trace)
+            # This is simplified - real current distribution would require network analysis
+            power = avg_current * avg_current * resistance
+            
+            trace_segments.append({
+                'start': (trace.start.x, trace.start.y),
+                'end': (trace.end.x, trace.end.y),
+                'power': power,
+                'length': length_m * 1000  # back to mm
+            })
+            total_heat_w += power
+        
+        # Distribute heat to mesh nodes along traces
+        for segment in trace_segments:
+            if segment['power'] <= 0:
+                continue
+            
+            # Find nodes near this trace segment
+            start_x, start_y = segment['start']
+            end_x, end_y = segment['end']
+            
+            # Simple approach: find nodes within trace width of the trace line
+            trace_nodes = []
+            for node in mesh.nodes:
+                if node.layer_idx == 0:  # Top layer
+                    # Distance from point to line segment
+                    dist = self._point_to_segment_distance(
+                        node.x, node.y, start_x, start_y, end_x, end_y
+                    )
+                    if dist < 1.0:  # Within 1mm of trace
+                        trace_nodes.append(node)
+            
+            # Distribute power to trace nodes
+            if trace_nodes:
+                power_per_node = segment['power'] / len(trace_nodes)
+                for node in trace_nodes:
+                    node.heat_source += power_per_node
+        
+        # Also add heat at injection points (contact resistance)
+        contact_resistance = 1e-3  # 1 mΩ contact resistance estimate
+        for cp in injection_points:
+            contact_heat = cp.current_a * cp.current_a * contact_resistance
+            
+            # Find nearest node to injection point
+            min_dist = float('inf')
+            nearest_node = None
+            for node in mesh.nodes:
+                if node.layer_idx == 0:
+                    dist = math.sqrt((node.x - cp.x_mm)**2 + (node.y - cp.y_mm)**2)
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_node = node
+            
+            if nearest_node:
+                nearest_node.heat_source += abs(contact_heat)
+    
+    def _point_to_segment_distance(self, px: float, py: float,
+                                    x1: float, y1: float, x2: float, y2: float) -> float:
+        """Calculate distance from point to line segment."""
+        dx = x2 - x1
+        dy = y2 - y1
+        
+        length_sq = dx*dx + dy*dy
+        if length_sq < 1e-10:
+            return math.sqrt((px - x1)**2 + (py - y1)**2)
+        
+        t = max(0, min(1, ((px - x1)*dx + (py - y1)*dy) / length_sq))
+        
+        proj_x = x1 + t * dx
+        proj_y = y1 + t * dy
+        
+        return math.sqrt((px - proj_x)**2 + (py - proj_y)**2)
     
     def _calculate_conductances(self, mesh: ThermalMesh):
         """Calculate thermal conductances between nodes."""

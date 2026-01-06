@@ -35,8 +35,9 @@ class VisualizationLayer(IntEnum):
     COMPONENTS_BOTTOM = 2
     HEATSINKS = 3
     MOUNTING_POINTS = 4
-    THERMAL_OVERLAY = 5
-    GRID = 6
+    CURRENT_POINTS = 5
+    THERMAL_OVERLAY = 6
+    GRID = 7
 
 
 @dataclass
@@ -71,6 +72,17 @@ class VisualMounting:
     y: float = 0.0
     diameter: float = 3.0
     is_thermal: bool = False
+    highlighted: bool = False
+
+
+@dataclass
+class VisualCurrentPoint:
+    """Visual representation of a current injection point."""
+    point_id: str = ""
+    x: float = 0.0
+    y: float = 0.0
+    is_source: bool = True  # True = current in, False = current out
+    current_a: float = 1.0
     highlighted: bool = False
 
 
@@ -114,6 +126,7 @@ class PCBVisualizationPanel(wx.Panel):
         self.components: List[VisualComponent] = []
         self.heatsinks: List[VisualHeatsink] = []
         self.mounting_points: List[VisualMounting] = []
+        self.current_points: List[VisualCurrentPoint] = []
         
         # Thermal overlay
         self.thermal_data: Optional['np.ndarray'] = None
@@ -127,6 +140,7 @@ class PCBVisualizationPanel(wx.Panel):
             VisualizationLayer.COMPONENTS_BOTTOM: True,
             VisualizationLayer.HEATSINKS: True,
             VisualizationLayer.MOUNTING_POINTS: True,
+            VisualizationLayer.CURRENT_POINTS: True,
             VisualizationLayer.THERMAL_OVERLAY: False,
             VisualizationLayer.GRID: True,
         }
@@ -193,6 +207,13 @@ class PCBVisualizationPanel(wx.Panel):
                           diameter=diameter, is_thermal=is_thermal)
         self.mounting_points.append(mp)
     
+    def add_current_point(self, point_id: str, x: float, y: float,
+                          is_source: bool = True, current_a: float = 1.0):
+        """Add a current injection/extraction point."""
+        cp = VisualCurrentPoint(point_id=point_id, x=x, y=y,
+                               is_source=is_source, current_a=current_a)
+        self.current_points.append(cp)
+    
     def set_thermal_data(self, data: 'np.ndarray', t_min: float, t_max: float):
         """Set thermal overlay data."""
         self.thermal_data = data
@@ -214,6 +235,8 @@ class PCBVisualizationPanel(wx.Panel):
             hs.highlighted = False
         for mp in self.mounting_points:
             mp.highlighted = False
+        for cp in self.current_points:
+            cp.highlighted = False
         self.selected_component = None
         self.Refresh()
     
@@ -247,6 +270,14 @@ class PCBVisualizationPanel(wx.Panel):
             if mp.highlighted:
                 # Center on mounting point
                 self._center_on_point(mp.x, mp.y)
+        self.Refresh()
+    
+    def select_current_point(self, point_id: str):
+        """Select current point by ID and highlight it."""
+        for cp in self.current_points:
+            cp.highlighted = (cp.point_id == point_id)
+            if cp.highlighted:
+                self._center_on_point(cp.x, cp.y)
         self.Refresh()
     
     def _center_on_point(self, x: float, y: float):
@@ -338,6 +369,10 @@ class PCBVisualizationPanel(wx.Panel):
         # Mounting points
         if self.layer_visible[VisualizationLayer.MOUNTING_POINTS]:
             self._draw_mounting_points(gc)
+        
+        # Current injection points
+        if self.layer_visible[VisualizationLayer.CURRENT_POINTS]:
+            self._draw_current_points(gc)
         
         # Board outline
         if self.layer_visible[VisualizationLayer.BOARD_OUTLINE]:
@@ -494,6 +529,43 @@ class PCBVisualizationPanel(wx.Panel):
             gc.SetPen(wx.Pen(wx.BLACK, 1))
             gc.StrokeLine(cx - r/2, cy, cx + r/2, cy)
             gc.StrokeLine(cx, cy - r/2, cx, cy + r/2)
+    
+    def _draw_current_points(self, gc):
+        """Draw current injection/extraction points."""
+        for cp in self.current_points:
+            cx, cy = self.board_to_screen(cp.x, cp.y)
+            r = max(8, 4 * self.scale)  # Radius based on current
+            
+            # Colors: green for source (current in), red for sink (current out)
+            if cp.is_source:
+                color = wx.Colour(76, 175, 80)  # Green
+                symbol = "+"
+            else:
+                color = wx.Colour(244, 67, 54)  # Red
+                symbol = "−"
+            
+            if cp.highlighted:
+                color = self.COMPONENT_HIGHLIGHTED
+                r = r * 1.3
+            
+            # Draw circle
+            gc.SetBrush(wx.Brush(color))
+            gc.SetPen(wx.Pen(wx.WHITE, 2))
+            gc.DrawEllipse(cx - r, cy - r, r * 2, r * 2)
+            
+            # Draw symbol (+/-)
+            gc.SetFont(wx.Font(int(r), wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            tw, th = gc.GetTextExtent(symbol)
+            gc.SetTextForeground(wx.WHITE)
+            gc.DrawText(symbol, cx - tw/2, cy - th/2)
+            
+            # Draw current value label
+            if self.scale > 1.5 or cp.highlighted:
+                label = f"{cp.current_a:.2f}A"
+                gc.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+                gc.SetTextForeground(wx.WHITE)
+                lw, lh = gc.GetTextExtent(label)
+                gc.DrawText(label, cx - lw/2, cy + r + 2)
     
     def _draw_thermal_overlay(self, gc):
         """Draw thermal overlay."""
