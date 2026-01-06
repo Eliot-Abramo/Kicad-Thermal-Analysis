@@ -47,6 +47,7 @@ class ComponentPowerPanel(TabPanel):
         self.viz_panel = viz_panel
         
         self._build_ui()
+        self._import_power_from_pcb()
         self._populate_list()
     
     def _build_ui(self):
@@ -123,6 +124,23 @@ class ComponentPowerPanel(TabPanel):
         
         self.SetSizer(sizer)
     
+    def _import_power_from_pcb(self):
+        """Import POWER_DISSIPATION from PCB component fields."""
+        imported_count = 0
+        
+        for comp in self.pcb_data.components:
+            if comp.power_dissipation_w > 0:
+                # Check if not already set
+                existing = any(cp.reference == comp.reference for cp in self.config.component_power)
+                if not existing:
+                    self.config.set_component_power(
+                        comp.reference, comp.power_dissipation_w, "schematic_field"
+                    )
+                    imported_count += 1
+        
+        if imported_count > 0:
+            print(f"Imported power from {imported_count} component(s)")
+    
     def _populate_list(self, filter_text: str = ""):
         """Populate component list."""
         self.list.DeleteAllItems()
@@ -174,6 +192,7 @@ class ComponentPowerPanel(TabPanel):
             ref = self.list.GetItemText(idx, 0)
             self.viz_panel.clear_selection()
             self.viz_panel.select_component(ref)
+            self.viz_panel.Refresh()
     
     def _on_edit(self, event):
         """Edit component power."""
@@ -240,6 +259,18 @@ class HeatsinkPanel(TabPanel):
                               "Import heatsink polygons from User layers")
         sizer.Add(header, 0, wx.ALL | wx.EXPAND, Spacing.MD)
         
+        # Info about detected shapes
+        detected_layers = list(self.pcb_data.user_shapes.keys())
+        detected_count = sum(len(shapes) for shapes in self.pcb_data.user_shapes.values())
+        
+        if detected_count > 0:
+            info = InfoBanner(self, f"Found {detected_count} shape(s) on layers: {', '.join(detected_layers)}", 
+                             style='success')
+        else:
+            info = InfoBanner(self, "No shapes found on User layers. Draw rectangles/polygons on User.1", 
+                             style='warning')
+        sizer.Add(info, 0, wx.ALL | wx.EXPAND, Spacing.SM)
+        
         # Layer selection
         layer_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
@@ -258,7 +289,7 @@ class HeatsinkPanel(TabPanel):
         
         layer_sizer.Add(self.layer_choice, 0, wx.RIGHT, Spacing.MD)
         
-        btn_refresh = IconButton(self, "Detect Shapes", icon='refresh', size=(120, 32))
+        btn_refresh = IconButton(self, "Import Shapes", icon='refresh', size=(120, 32))
         btn_refresh.Bind(wx.EVT_BUTTON, self._on_refresh)
         layer_sizer.Add(btn_refresh, 0)
         
@@ -268,12 +299,13 @@ class HeatsinkPanel(TabPanel):
         self.list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SIMPLE)
         self.list.SetBackgroundColour(Colors.INPUT_BG)
         
-        self.list.InsertColumn(0, "ID", width=80)
+        self.list.InsertColumn(0, "ID", width=100)
         self.list.InsertColumn(1, "Material", width=120)
         self.list.InsertColumn(2, "Area (mm²)", width=80)
         self.list.InsertColumn(3, "Thickness", width=80)
         self.list.InsertColumn(4, "Emissivity", width=80)
         
+        self.list.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_select)
         self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_edit)
         
         sizer.Add(self.list, 1, wx.ALL | wx.EXPAND, Spacing.MD)
@@ -332,6 +364,15 @@ class HeatsinkPanel(TabPanel):
             self.viz_panel.add_heatsink(hs.heatsink_id, hs.polygon_points, hs.material)
         
         self.viz_panel.Refresh()
+    
+    def _on_select(self, event):
+        """Highlight selected heatsink on PCB."""
+        idx = event.GetIndex()
+        if idx >= 0:
+            hs_id = self.list.GetItemText(idx, 0)
+            self.viz_panel.clear_selection()
+            self.viz_panel.select_heatsink(hs_id)
+            self.viz_panel.Refresh()
     
     def _on_refresh(self, event):
         """Import shapes from selected layer."""
@@ -440,6 +481,7 @@ class MountingPanel(TabPanel):
         self.list.InsertColumn(4, "Fixed Temp", width=80)
         self.list.InsertColumn(5, "Interface", width=80)
         
+        self.list.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_select)
         self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_edit)
         
         sizer.Add(self.list, 1, wx.ALL | wx.EXPAND, Spacing.MD)
@@ -447,7 +489,7 @@ class MountingPanel(TabPanel):
         # Action buttons
         action_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
-        btn_edit = IconButton(self, "Edit", icon='edit', size=(70, 32))
+        btn_edit = IconButton(self, "Set Temp", icon='edit', size=(90, 32))
         btn_edit.Bind(wx.EVT_BUTTON, self._on_edit)
         action_sizer.Add(btn_edit, 0, wx.RIGHT, Spacing.SM)
         
@@ -490,6 +532,15 @@ class MountingPanel(TabPanel):
             )
         
         self.viz_panel.Refresh()
+    
+    def _on_select(self, event):
+        """Highlight selected mounting point on PCB."""
+        idx = event.GetIndex()
+        if idx >= 0:
+            mp_id = self.list.GetItemText(idx, 0)
+            self.viz_panel.clear_selection()
+            self.viz_panel.select_mounting_point(mp_id)
+            self.viz_panel.Refresh()
     
     def _on_detect(self, event):
         """Auto-detect mounting holes from PCB."""

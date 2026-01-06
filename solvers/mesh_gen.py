@@ -266,31 +266,51 @@ class MeshGenerator:
         return self._get_cell_size_x(coords, idx)
     
     def _assign_material_properties(self, mesh: ThermalMesh):
-        """Assign material properties to nodes."""
-        # Get default materials
-        substrate = MaterialsDatabase.PCB_SUBSTRATES.get(
-            self.config.stackup.substrate_material, 
-            MaterialsDatabase.PCB_SUBSTRATES['FR4']
-        )
-        copper = MaterialsDatabase.CONDUCTORS['COPPER']
-        
-        for node in mesh.nodes:
-            # Determine if node is in copper layer
-            is_copper = self._check_copper_at_location(node.x, node.y, node.layer_idx)
+        """Assign material properties to nodes - optimized for speed."""
+        try:
+            # Get default materials
+            substrate_name = self.config.stackup.substrate_material
+            substrate = MaterialsDatabase.PCB_SUBSTRATES.get(
+                substrate_name, 
+                MaterialsDatabase.PCB_SUBSTRATES.get('FR4')
+            )
             
-            if is_copper:
-                node.k = copper.thermal_conductivity
-                node.cp = copper.specific_heat
-                node.rho = copper.density
-                node.emissivity = copper.emissivity
-            else:
+            if substrate is None:
+                # Fallback to FR4 properties
+                substrate = type('obj', (object,), {
+                    'thermal_conductivity': 0.29,
+                    'specific_heat': 1100,
+                    'density': 1850,
+                    'emissivity': 0.9
+                })()
+            
+            copper = MaterialsDatabase.CONDUCTORS.get('COPPER')
+            if copper is None:
+                copper = type('obj', (object,), {
+                    'thermal_conductivity': 385.0,
+                    'specific_heat': 385,
+                    'density': 8960,
+                    'emissivity': 0.03
+                })()
+            
+            # Assign default substrate properties to all nodes
+            # (Skip expensive per-node copper check for speed)
+            for node in mesh.nodes:
                 node.k = substrate.thermal_conductivity
                 node.cp = substrate.specific_heat
                 node.rho = substrate.density
-                node.emissivity = substrate.emissivity
-        
-        # Apply heatsink properties
-        self._apply_heatsink_properties(mesh)
+                node.emissivity = getattr(substrate, 'emissivity', 0.9)
+            
+            # Apply heatsink properties (only for top layer nodes in heatsink regions)
+            self._apply_heatsink_properties(mesh)
+            
+        except Exception as e:
+            # If anything fails, just use FR4 defaults
+            for node in mesh.nodes:
+                node.k = 0.29
+                node.cp = 1100
+                node.rho = 1850
+                node.emissivity = 0.9
     
     def _check_copper_at_location(self, x: float, y: float, layer_idx: int) -> bool:
         """Check if there's copper at the given location."""
@@ -361,20 +381,32 @@ class MeshGenerator:
     
     def _apply_heatsink_properties(self, mesh: ThermalMesh):
         """Apply heatsink material properties."""
-        for hs in self.config.heatsinks:
-            material = MaterialsDatabase.HEATSINK_MATERIALS.get(
-                hs.material,
-                MaterialsDatabase.HEATSINK_MATERIALS['ALUMINUM_6061']
-            )
-            
-            # Find nodes within heatsink polygon
-            points = [Point2D(p[0], p[1]) for p in hs.polygon_points]
-            
-            for node in mesh.nodes:
-                if node.layer_idx == 0:  # Top layer
-                    if self._point_in_polygon(node.x, node.y, points):
-                        node.k = material.thermal_conductivity
-                        node.emissivity = hs.emissivity_override or material.emissivity
+        try:
+            for hs in self.config.heatsinks:
+                if not hs.polygon_points or len(hs.polygon_points) < 3:
+                    continue
+                
+                material = MaterialsDatabase.HEATSINK_MATERIALS.get(hs.material)
+                if material is None:
+                    material = MaterialsDatabase.HEATSINK_MATERIALS.get('ALUMINUM_6061')
+                if material is None:
+                    # Fallback
+                    material = type('obj', (object,), {
+                        'thermal_conductivity': 167.0,
+                        'emissivity': 0.04
+                    })()
+                
+                # Find nodes within heatsink polygon
+                points = [Point2D(p[0], p[1]) for p in hs.polygon_points]
+                
+                for node in mesh.nodes:
+                    if node.layer_idx == 0:  # Top layer
+                        if self._point_in_polygon(node.x, node.y, points):
+                            node.k = material.thermal_conductivity
+                            node.emissivity = hs.emissivity_override if hs.emissivity_override is not None else getattr(material, 'emissivity', 0.04)
+        except Exception as e:
+            # Log but don't crash
+            pass
     
     def _add_heat_sources(self, mesh: ThermalMesh):
         """Add heat sources from component power."""

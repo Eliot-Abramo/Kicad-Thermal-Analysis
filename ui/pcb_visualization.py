@@ -210,6 +210,10 @@ class PCBVisualizationPanel(wx.Panel):
         for comp in self.components:
             comp.selected = False
             comp.highlighted = False
+        for hs in self.heatsinks:
+            hs.highlighted = False
+        for mp in self.mounting_points:
+            mp.highlighted = False
         self.selected_component = None
         self.Refresh()
     
@@ -219,7 +223,45 @@ class PCBVisualizationPanel(wx.Panel):
             comp.selected = (comp.reference == reference)
             if comp.selected:
                 self.selected_component = reference
+                # Center view on selected component
+                self._center_on_point(comp.x, comp.y)
         self.Refresh()
+    
+    def select_heatsink(self, heatsink_id: str):
+        """Select heatsink by ID and highlight it."""
+        # Clear other highlights
+        for hs in self.heatsinks:
+            hs.highlighted = (hs.heatsink_id == heatsink_id)
+            if hs.highlighted and hs.points:
+                # Center on heatsink
+                cx = sum(p[0] for p in hs.points) / len(hs.points)
+                cy = sum(p[1] for p in hs.points) / len(hs.points)
+                self._center_on_point(cx, cy)
+        self.Refresh()
+    
+    def select_mounting_point(self, point_id: str):
+        """Select mounting point by ID and highlight it."""
+        # Clear other highlights
+        for mp in self.mounting_points:
+            mp.highlighted = (mp.point_id == point_id)
+            if mp.highlighted:
+                # Center on mounting point
+                self._center_on_point(mp.x, mp.y)
+        self.Refresh()
+    
+    def _center_on_point(self, x: float, y: float):
+        """Smoothly center view on a board coordinate."""
+        w, h = self.GetSize()
+        if w <= 0 or h <= 0:
+            return
+        
+        # Calculate offset to center on point
+        target_offset_x = w / 2 - x * self.scale
+        target_offset_y = h / 2 - y * self.scale
+        
+        # Set offset (could animate this for smoother UX)
+        self.offset_x = target_offset_x
+        self.offset_y = target_offset_y
     
     def fit_view(self):
         """Fit board in view."""

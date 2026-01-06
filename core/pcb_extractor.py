@@ -275,6 +275,9 @@ class PCBExtractor:
                 layer="F.Cu" if fp.GetLayer() == 0 else "B.Cu"
             )
             
+            # Extract POWER_DISSIPATION from footprint fields
+            comp.power_dissipation_w = self._extract_power_field(fp)
+            
             # Extract pads
             for pad in fp.Pads():
                 pad_pos = pad.GetPosition()
@@ -292,6 +295,90 @@ class PCBExtractor:
             components.append(comp)
         
         return components
+    
+    def _extract_power_field(self, fp) -> float:
+        """Extract power dissipation from footprint fields."""
+        power = 0.0
+        
+        # Field names to check (case-insensitive)
+        power_field_names = [
+            'POWER_DISSIPATION', 'Power_Dissipation', 'power_dissipation',
+            'POWER', 'Power', 'power',
+            'PWR', 'Pwr', 'pwr',
+            'THERMAL_POWER', 'Thermal_Power', 'thermal_power',
+            'P_DISS', 'P_diss', 'p_diss',
+            'PDISS', 'Pdiss', 'pdiss',
+        ]
+        
+        try:
+            # Try GetFieldByName (KiCad 7+)
+            if hasattr(fp, 'GetFieldByName'):
+                for name in power_field_names:
+                    try:
+                        field = fp.GetFieldByName(name)
+                        if field:
+                            power = self._parse_power_value(field.GetText())
+                            if power > 0:
+                                return power
+                    except Exception:
+                        pass
+            
+            # Try GetProperties (older API)
+            if hasattr(fp, 'GetProperties'):
+                props = fp.GetProperties()
+                for name in power_field_names:
+                    if name in props:
+                        power = self._parse_power_value(props[name])
+                        if power > 0:
+                            return power
+            
+            # Try iterating fields directly
+            if hasattr(fp, 'GetFields'):
+                for field in fp.GetFields():
+                    field_name = field.GetName() if hasattr(field, 'GetName') else ""
+                    if field_name.upper() in [n.upper() for n in power_field_names]:
+                        power = self._parse_power_value(field.GetText())
+                        if power > 0:
+                            return power
+            
+            # Try GetField with index (KiCad 6 style)
+            if hasattr(fp, 'GetField'):
+                for i in range(10):  # Check first 10 fields
+                    try:
+                        field = fp.GetField(i)
+                        if field:
+                            field_name = field.GetName() if hasattr(field, 'GetName') else ""
+                            if field_name.upper() in [n.upper() for n in power_field_names]:
+                                power = self._parse_power_value(field.GetText())
+                                if power > 0:
+                                    return power
+                    except Exception:
+                        break
+                        
+        except Exception:
+            pass
+        
+        return power
+    
+    def _parse_power_value(self, text: str) -> float:
+        """Parse power value from text (handles W, mW, uW suffixes)."""
+        if not text:
+            return 0.0
+        
+        text = text.strip().upper()
+        
+        try:
+            # Handle different suffixes
+            if text.endswith('MW'):
+                return float(text[:-2]) * 1e-3
+            elif text.endswith('UW') or text.endswith('µW'):
+                return float(text[:-2]) * 1e-6
+            elif text.endswith('W'):
+                return float(text[:-1])
+            else:
+                return float(text)
+        except ValueError:
+            return 0.0
     
     def _pad_shape_name(self, shape_id: int) -> str:
         """Convert pad shape ID to name."""
@@ -413,39 +500,105 @@ class PCBExtractor:
         
         shape_count = 0
         
+        # Get User layer IDs
+        user_layer_ids = {}
+        try:
+            for i in range(1, 10):
+                layer_name = f"User.{i}"
+                layer_id = self.board.GetLayerID(layer_name)
+                if layer_id >= 0:
+                    user_layer_ids[layer_id] = layer_name
+        except Exception:
+            pass
+        
+        # Extract from board drawings
         for drawing in self.board.GetDrawings():
-            layer_name = drawing.GetLayerName()
-            
-            # Only process User layers
-            if not layer_name.startswith("User."):
-                continue
-            
-            if layer_name not in shapes:
-                shapes[layer_name] = []
-            
-            shape_count += 1
-            
-            # Handle different shape types
-            class_name = drawing.GetClass()
-            
-            if class_name == "PCB_SHAPE":
-                shape_type = drawing.GetShape()
+            try:
+                layer_name = drawing.GetLayerName()
+                layer_id = drawing.GetLayer()
                 
-                points = []
-                radius = 0.0
+                # Check if User layer by name or ID
+                is_user_layer = layer_name.startswith("User.")
+                if not is_user_layer and layer_id in user_layer_ids:
+                    layer_name = user_layer_ids[layer_id]
+                    is_user_layer = True
                 
-                if shape_type == 1:  # Polygon
-                    try:
-                        poly = drawing.GetPolyShape()
-                        if poly and poly.OutlineCount() > 0:
-                            outline = poly.Outline(0)
-                            for i in range(outline.PointCount()):
-                                pt = outline.GetPoint(i)
-                                points.append(Point2D(pt.x * self.SCALE, pt.y * self.SCALE))
-                    except Exception:
-                        pass
+                if not is_user_layer:
+                    continue
                 
-                elif shape_type == 2:  # Rectangle
+                if layer_name not in shapes:
+                    shapes[layer_name] = []
+                
+                shape_count += 1
+                
+                # Handle different shape types
+                class_name = drawing.GetClass()
+                
+                if class_name == "PCB_SHAPE":
+                    shape = self._extract_pcb_shape(drawing, layer_name, shape_count)
+                    if shape and shape.points:
+                        shapes[layer_name].append(shape)
+                        
+            except Exception as e:
+                # Log but continue
+                pass
+        
+        # Also check zones on User layers (some users put heatsink shapes as zones)
+        try:
+            for zone in self.board.Zones():
+                layer_name = zone.GetLayerName()
+                
+                if not layer_name.startswith("User."):
+                    continue
+                
+                if layer_name not in shapes:
+                    shapes[layer_name] = []
+                
+                shape_count += 1
+                points = self._extract_zone_outline(zone)
+                
+                if points:
+                    shape = UserLayerShape(
+                        shape_id=f"Zone_{shape_count}",
+                        layer=layer_name,
+                        shape_type="polygon",
+                        points=points
+                    )
+                    shapes[layer_name].append(shape)
+        except Exception:
+            pass
+        
+        return shapes
+    
+    def _extract_pcb_shape(self, drawing, layer_name: str, shape_count: int) -> Optional[UserLayerShape]:
+        """Extract a PCB_SHAPE object."""
+        points = []
+        radius = 0.0
+        shape_type = "polygon"
+        
+        try:
+            # Get shape type - handle both old and new API
+            if hasattr(drawing, 'GetShape'):
+                shape_enum = drawing.GetShape()
+            else:
+                return None
+            
+            # Shape types: 0=Segment, 1=Rect, 2=Arc, 3=Circle, 4=Polygon, 5=Bezier
+            # KiCad 7+: S_SEGMENT=0, S_RECT=1, S_ARC=2, S_CIRCLE=3, S_POLYGON=4
+            
+            if shape_enum == 4:  # Polygon
+                try:
+                    poly = drawing.GetPolyShape()
+                    if poly and poly.OutlineCount() > 0:
+                        outline = poly.Outline(0)
+                        for i in range(outline.PointCount()):
+                            pt = outline.GetPoint(i)
+                            points.append(Point2D(pt.x * self.SCALE, pt.y * self.SCALE))
+                except Exception:
+                    pass
+            
+            elif shape_enum == 1:  # Rectangle
+                try:
                     start = drawing.GetStart()
                     end = drawing.GetEnd()
                     points = [
@@ -454,23 +607,70 @@ class PCBExtractor:
                         Point2D(end.x * self.SCALE, end.y * self.SCALE),
                         Point2D(start.x * self.SCALE, end.y * self.SCALE),
                     ]
-                
-                elif shape_type == 0:  # Circle
-                    center = drawing.GetCenter()
-                    radius = drawing.GetRadius() * self.SCALE
+                except Exception:
+                    pass
+            
+            elif shape_enum == 3:  # Circle
+                try:
+                    center = drawing.GetCenter() if hasattr(drawing, 'GetCenter') else drawing.GetStart()
+                    radius = drawing.GetRadius() * self.SCALE if hasattr(drawing, 'GetRadius') else 5.0
                     points = [Point2D(center.x * self.SCALE, center.y * self.SCALE)]
-                
-                if points:
-                    shape = UserLayerShape(
-                        shape_id=f"Shape_{shape_count}",
-                        layer=layer_name,
-                        shape_type="polygon" if shape_type != 0 else "circle",
-                        points=points,
-                        radius=radius
-                    )
-                    shapes[layer_name].append(shape)
+                    shape_type = "circle"
+                except Exception:
+                    pass
+            
+            elif shape_enum == 0:  # Segment/Line - create thin rectangle
+                try:
+                    start = drawing.GetStart()
+                    end = drawing.GetEnd()
+                    width = drawing.GetWidth() * self.SCALE if hasattr(drawing, 'GetWidth') else 0.5
+                    
+                    # Create rectangle around line
+                    import math
+                    dx = end.x - start.x
+                    dy = end.y - start.y
+                    length = math.sqrt(dx*dx + dy*dy)
+                    if length > 0:
+                        nx = -dy / length * width / 2 * self.SCALE
+                        ny = dx / length * width / 2 * self.SCALE
+                        
+                        sx, sy = start.x * self.SCALE, start.y * self.SCALE
+                        ex, ey = end.x * self.SCALE, end.y * self.SCALE
+                        
+                        points = [
+                            Point2D(sx + nx, sy + ny),
+                            Point2D(ex + nx, ey + ny),
+                            Point2D(ex - nx, ey - ny),
+                            Point2D(sx - nx, sy - ny),
+                        ]
+                except Exception:
+                    pass
+            
+        except Exception:
+            pass
         
-        return shapes
+        if points:
+            return UserLayerShape(
+                shape_id=f"Shape_{shape_count}",
+                layer=layer_name,
+                shape_type=shape_type,
+                points=points,
+                radius=radius
+            )
+        return None
+    
+    def _extract_zone_outline(self, zone) -> List[Point2D]:
+        """Extract outline from a zone."""
+        points = []
+        try:
+            outline = zone.Outline()
+            if outline:
+                for i in range(outline.FullPointCount()):
+                    pt = outline.GetPoint(i)
+                    points.append(Point2D(pt.x * self.SCALE, pt.y * self.SCALE))
+        except Exception:
+            pass
+        return points
 
 
 __all__ = [
