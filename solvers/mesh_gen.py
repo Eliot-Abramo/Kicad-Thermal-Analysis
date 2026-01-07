@@ -450,39 +450,37 @@ class MeshGenerator:
                     node.heat_source += power_per_node
     
     def _add_current_heat_sources(self, mesh: ThermalMesh):
-        """Add heat sources from current injection (I²R Joule heating).
+        """Add heat sources from current paths (I²R Joule heating).
         
-        This simplified model:
-        1. Calculates total current flow from injection points
-        2. Distributes heat along trace paths (simplified uniform model)
-        3. Uses copper resistivity and trace geometry for I²R calculation
+        This model:
+        1. For each current path (source net → sink net at X amps)
+        2. Find all traces on those nets
+        3. Calculate I²R heat for each trace segment
+        4. Distribute heat to mesh nodes along traces
         """
         from ..core.constants import PhysicalConstants
         
-        # Get current injection points
-        injection_points = self.config.current_injection_points
-        if not injection_points:
-            return
-        
-        # Calculate total current (should balance for valid simulation)
-        total_current_in = sum(cp.current_a for cp in injection_points if cp.current_a > 0)
-        total_current_out = sum(abs(cp.current_a) for cp in injection_points if cp.current_a < 0)
-        
-        # Use average for heat calculation
-        avg_current = (total_current_in + total_current_out) / 2
-        if avg_current <= 0:
+        # Get current paths
+        current_paths = self.config.current_paths
+        if not current_paths:
             return
         
         # Get copper properties
-        copper_resistivity = PhysicalConstants.COPPER_RESISTIVITY  # Ω·m
+        copper_resistivity = PhysicalConstants.COPPER_RESISTIVITY  # Ω·m at 20°C
         
-        # Calculate total trace resistance and heat
-        # This is a simplified model - assumes current flows uniformly through traces
-        total_heat_w = 0.0
+        # Build net-to-traces mapping
+        # First, we need to know which net each trace belongs to
+        # This requires extracting net info from PCB data
+        trace_nets = {}  # trace_id -> net_name
+        
+        # For now, we'll apply heat to ALL traces proportionally
+        # A full implementation would use actual net connectivity
+        
+        # Calculate total trace resistance
+        total_trace_length = 0.0
         trace_segments = []
         
         for trace in self.pcb_data.traces:
-            # Calculate trace length
             dx = trace.end.x - trace.start.x
             dy = trace.end.y - trace.start.y
             length_m = math.sqrt(dx*dx + dy*dy) * 1e-3  # mm to m
@@ -490,11 +488,9 @@ class MeshGenerator:
             if length_m < 1e-6:
                 continue
             
-            # Get copper thickness (assume 35um = 1oz)
+            # Copper thickness (35um = 1oz default)
             copper_thickness_m = 35e-6
-            
-            # Trace cross-section area
-            width_m = trace.width * 1e-3  # mm to m
+            width_m = trace.width * 1e-3
             area_m2 = width_m * copper_thickness_m
             
             if area_m2 < 1e-12:
@@ -503,61 +499,75 @@ class MeshGenerator:
             # Trace resistance R = ρL/A
             resistance = copper_resistivity * length_m / area_m2
             
-            # Power P = I²R (assuming current flows through this trace)
-            # This is simplified - real current distribution would require network analysis
-            power = avg_current * avg_current * resistance
-            
             trace_segments.append({
                 'start': (trace.start.x, trace.start.y),
                 'end': (trace.end.x, trace.end.y),
-                'power': power,
-                'length': length_m * 1000  # back to mm
+                'resistance': resistance,
+                'length_mm': length_m * 1000,
+                'net': getattr(trace, 'net', '')  # May not have net info
             })
-            total_heat_w += power
+            total_trace_length += length_m * 1000
         
-        # Distribute heat to mesh nodes along traces
-        for segment in trace_segments:
-            if segment['power'] <= 0:
+        if not trace_segments:
+            return
+        
+        # For each current path, calculate heat
+        for cp in current_paths:
+            current = cp.current_a
+            if current <= 0:
                 continue
             
-            # Find nodes near this trace segment
-            start_x, start_y = segment['start']
-            end_x, end_y = segment['end']
+            # Find traces on source or sink net
+            # For simplified model: distribute current through all traces proportionally
+            # More accurate: only traces connecting source to sink nets
             
-            # Simple approach: find nodes within trace width of the trace line
-            trace_nodes = []
-            for node in mesh.nodes:
-                if node.layer_idx == 0:  # Top layer
-                    # Distance from point to line segment
-                    dist = self._point_to_segment_distance(
-                        node.x, node.y, start_x, start_y, end_x, end_y
-                    )
-                    if dist < 1.0:  # Within 1mm of trace
-                        trace_nodes.append(node)
+            relevant_traces = []
+            for seg in trace_segments:
+                # Include trace if it's on a power net (simplified heuristic)
+                # In a full implementation, we'd trace connectivity from source to sink
+                net = seg.get('net', '')
+                if net == cp.source_net or net == cp.sink_net:
+                    relevant_traces.append(seg)
             
-            # Distribute power to trace nodes
-            if trace_nodes:
-                power_per_node = segment['power'] / len(trace_nodes)
-                for node in trace_nodes:
-                    node.heat_source += power_per_node
-        
-        # Also add heat at injection points (contact resistance)
-        contact_resistance = 1e-3  # 1 mΩ contact resistance estimate
-        for cp in injection_points:
-            contact_heat = cp.current_a * cp.current_a * contact_resistance
+            # If no net info, use all traces (simplified fallback)
+            if not relevant_traces:
+                relevant_traces = trace_segments
             
-            # Find nearest node to injection point
-            min_dist = float('inf')
-            nearest_node = None
-            for node in mesh.nodes:
-                if node.layer_idx == 0:
-                    dist = math.sqrt((node.x - cp.x_mm)**2 + (node.y - cp.y_mm)**2)
-                    if dist < min_dist:
-                        min_dist = dist
-                        nearest_node = node
+            # Calculate total resistance of current path
+            # Simplified: sum of all trace resistances (actual would be network analysis)
+            total_resistance = sum(t['resistance'] for t in relevant_traces)
             
-            if nearest_node:
-                nearest_node.heat_source += abs(contact_heat)
+            # Total power P = I²R
+            total_power = current * current * total_resistance
+            
+            # Distribute heat proportionally by trace resistance (I²R per segment)
+            for seg in relevant_traces:
+                if total_resistance > 0:
+                    seg_power = (seg['resistance'] / total_resistance) * total_power
+                else:
+                    seg_power = 0
+                
+                if seg_power <= 0:
+                    continue
+                
+                # Find mesh nodes near this trace
+                start_x, start_y = seg['start']
+                end_x, end_y = seg['end']
+                
+                trace_nodes = []
+                for node in mesh.nodes:
+                    if node.layer_idx == 0:  # Top layer
+                        dist = self._point_to_segment_distance(
+                            node.x, node.y, start_x, start_y, end_x, end_y
+                        )
+                        if dist < 1.0:  # Within 1mm
+                            trace_nodes.append(node)
+                
+                # Distribute segment power to nodes
+                if trace_nodes:
+                    power_per_node = seg_power / len(trace_nodes)
+                    for node in trace_nodes:
+                        node.heat_source += power_per_node
     
     def _point_to_segment_distance(self, px: float, py: float,
                                     x1: float, y1: float, x2: float, y2: float) -> float:

@@ -31,7 +31,7 @@ from .pcb_visualization import (
 from ..core.pcb_extractor import PCBExtractor, PCBData
 from ..core.config import (
     ThermalAnalysisConfig, ConfigManager,
-    ComponentPowerConfig, HeatsinkConfig, MountingPointConfig, CurrentInjectionPoint
+    ComponentPowerConfig, HeatsinkConfig, MountingPointConfig, CurrentPath
 )
 from ..core.constants import MaterialsDatabase, ComponentThermalDatabase
 
@@ -636,7 +636,7 @@ class MountingPanel(TabPanel):
 
 
 class CurrentPathPanel(TabPanel):
-    """Panel for defining current injection/extraction points for I²R heating."""
+    """Panel for defining current paths for I²R Joule heating analysis."""
     
     def __init__(self, parent, config: ThermalAnalysisConfig,
                  pcb_data: PCBData, viz_panel: PCBVisualizationPanel):
@@ -651,60 +651,79 @@ class CurrentPathPanel(TabPanel):
     def _build_ui(self):
         sizer = wx.BoxSizer(wx.VERTICAL)
         
-        header = SectionHeader(self, "Current Path",
-                              "Define current entry/exit points for Joule heating analysis")
+        header = SectionHeader(self, "Current Paths",
+                              "Define current flow paths for Joule heating (I²R) analysis")
         sizer.Add(header, 0, wx.ALL | wx.EXPAND, Spacing.MD)
         
-        # Info banner explaining the concept
+        # Info banner
         info = InfoBanner(self, 
-            "Current flows from positive (+) injection points through traces to negative (-) extraction points.\n"
-            "The solver calculates I²R heat generation in each trace segment.",
+            "Define where current enters (source net) and exits (sink net) the board.\n"
+            "Heat is calculated as I²R along all traces connecting these nets.",
             style='info')
         sizer.Add(info, 0, wx.ALL | wx.EXPAND, Spacing.SM)
         
-        # Net selection for adding points
-        net_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        # Add current path section
+        add_box = wx.StaticBox(self, label="Add Current Path")
+        add_sizer = wx.StaticBoxSizer(add_box, wx.VERTICAL)
         
-        net_sizer.Add(wx.StaticText(self, label="Net:"), 
-                     0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, Spacing.SM)
+        # Get available nets
+        net_names = ["(select net)"]
+        if self.pcb_data.nets:
+            net_names += sorted(set(self.pcb_data.nets.values()))
         
-        # Get available nets from PCB
-        net_names = sorted(set(self.pcb_data.nets.values())) if self.pcb_data.nets else ["(no nets)"]
-        self.net_choice = wx.Choice(self, choices=net_names)
-        if net_names:
-            self.net_choice.SetSelection(0)
-        net_sizer.Add(self.net_choice, 1, wx.RIGHT, Spacing.MD)
+        grid = wx.FlexGridSizer(3, 2, Spacing.SM, Spacing.MD)
+        grid.AddGrowableCol(1)
         
-        btn_add_pos = IconButton(self, "+ Source", icon='add', size=(90, 32))
-        btn_add_pos.SetToolTip("Add current injection point (source)")
-        btn_add_pos.Bind(wx.EVT_BUTTON, lambda e: self._on_add("source"))
-        net_sizer.Add(btn_add_pos, 0, wx.RIGHT, Spacing.SM)
+        # Source net
+        grid.Add(wx.StaticText(self, label="Source Net (current in):"), 
+                0, wx.ALIGN_CENTER_VERTICAL)
+        self.source_choice = wx.Choice(self, choices=net_names)
+        self.source_choice.SetSelection(0)
+        grid.Add(self.source_choice, 1, wx.EXPAND)
         
-        btn_add_neg = IconButton(self, "- Sink", icon='add', size=(80, 32))
-        btn_add_neg.SetToolTip("Add current extraction point (sink)")
-        btn_add_neg.Bind(wx.EVT_BUTTON, lambda e: self._on_add("sink"))
-        net_sizer.Add(btn_add_neg, 0)
+        # Sink net
+        grid.Add(wx.StaticText(self, label="Sink Net (current out):"), 
+                0, wx.ALIGN_CENTER_VERTICAL)
+        self.sink_choice = wx.Choice(self, choices=net_names)
+        # Try to select GND by default
+        gnd_idx = 0
+        for i, name in enumerate(net_names):
+            if 'GND' in name.upper():
+                gnd_idx = i
+                break
+        self.sink_choice.SetSelection(gnd_idx)
+        grid.Add(self.sink_choice, 1, wx.EXPAND)
         
-        sizer.Add(net_sizer, 0, wx.ALL | wx.EXPAND, Spacing.MD)
+        # Current
+        grid.Add(wx.StaticText(self, label="Current (Amps):"), 
+                0, wx.ALIGN_CENTER_VERTICAL)
+        current_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.txt_current = wx.TextCtrl(self, value="1.0", size=(80, -1))
+        current_sizer.Add(self.txt_current, 0, wx.RIGHT, Spacing.MD)
         
-        # Current injection list
+        btn_add = IconButton(self, "Add Path", icon='add', size=(100, 32))
+        btn_add.Bind(wx.EVT_BUTTON, self._on_add)
+        current_sizer.Add(btn_add, 0)
+        grid.Add(current_sizer, 1)
+        
+        add_sizer.Add(grid, 0, wx.ALL | wx.EXPAND, Spacing.SM)
+        sizer.Add(add_sizer, 0, wx.ALL | wx.EXPAND, Spacing.MD)
+        
+        # Current paths list
         self.list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SIMPLE)
         self.list.SetBackgroundColour(Colors.INPUT_BG)
         
-        self.list.InsertColumn(0, "ID", width=80)
-        self.list.InsertColumn(1, "Type", width=60)
-        self.list.InsertColumn(2, "Net", width=120)
-        self.list.InsertColumn(3, "Current (A)", width=80)
-        self.list.InsertColumn(4, "X (mm)", width=70)
-        self.list.InsertColumn(5, "Y (mm)", width=70)
-        self.list.InsertColumn(6, "Description", width=150)
+        self.list.InsertColumn(0, "ID", width=60)
+        self.list.InsertColumn(1, "Source Net", width=150)
+        self.list.InsertColumn(2, "Sink Net", width=150)
+        self.list.InsertColumn(3, "Current (A)", width=100)
+        self.list.InsertColumn(4, "Description", width=200)
         
-        self.list.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_select)
         self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_edit)
         
         sizer.Add(self.list, 1, wx.ALL | wx.EXPAND, Spacing.MD)
         
-        # Summary and actions
+        # Actions
         action_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
         btn_edit = IconButton(self, "Edit", icon='edit', size=(70, 32))
@@ -717,242 +736,117 @@ class CurrentPathPanel(TabPanel):
         
         action_sizer.AddStretchSpacer()
         
-        # Current balance display
-        self.balance_label = wx.StaticText(self, label="Balance: 0.000 A in / 0.000 A out")
-        self.balance_label.SetFont(Fonts.bold())
-        action_sizer.Add(self.balance_label, 0, wx.ALIGN_CENTER_VERTICAL)
+        # Total current display
+        self.total_label = wx.StaticText(self, label="Total: 0.000 A")
+        self.total_label.SetFont(Fonts.bold())
+        action_sizer.Add(self.total_label, 0, wx.ALIGN_CENTER_VERTICAL)
         
         sizer.Add(action_sizer, 0, wx.ALL | wx.EXPAND, Spacing.MD)
-        
-        # Warning banner for imbalanced current
-        self.warning_banner = InfoBanner(self, 
-            "Warning: Input and output currents should be equal for valid simulation", 
-            style='warning')
-        sizer.Add(self.warning_banner, 0, wx.ALL | wx.EXPAND, Spacing.SM)
-        self.warning_banner.Hide()
         
         self.SetSizer(sizer)
     
     def _populate_list(self):
-        """Populate current injection point list."""
+        """Populate current paths list."""
         self.list.DeleteAllItems()
         
-        total_in = 0.0
-        total_out = 0.0
+        total_current = 0.0
         
-        for cp in self.config.current_injection_points:
-            point_type = "Source" if cp.current_a > 0 else "Sink"
+        for cp in self.config.current_paths:
+            idx = self.list.InsertItem(self.list.GetItemCount(), cp.path_id)
+            self.list.SetItem(idx, 1, cp.source_net)
+            self.list.SetItem(idx, 2, cp.sink_net)
+            self.list.SetItem(idx, 3, f"{cp.current_a:.3f}")
+            self.list.SetItem(idx, 4, cp.description)
             
-            idx = self.list.InsertItem(self.list.GetItemCount(), cp.point_id)
-            self.list.SetItem(idx, 1, point_type)
-            self.list.SetItem(idx, 2, cp.net_name)
-            self.list.SetItem(idx, 3, f"{abs(cp.current_a):.3f}")
-            self.list.SetItem(idx, 4, f"{cp.x_mm:.1f}")
-            self.list.SetItem(idx, 5, f"{cp.y_mm:.1f}")
-            self.list.SetItem(idx, 6, cp.description)
-            
-            # Color code by type
-            if cp.current_a > 0:
-                self.list.SetItemBackgroundColour(idx, wx.Colour(232, 245, 233))  # Green tint
-                total_in += cp.current_a
-            else:
-                self.list.SetItemBackgroundColour(idx, wx.Colour(255, 235, 238))  # Red tint
-                total_out += abs(cp.current_a)
+            total_current += cp.current_a
         
-        # Update balance
-        self.balance_label.SetLabel(f"Balance: {total_in:.3f} A in / {total_out:.3f} A out")
-        
-        # Show warning if imbalanced
-        is_balanced = abs(total_in - total_out) < 0.001
-        self.warning_banner.Show(not is_balanced and (total_in > 0 or total_out > 0))
-        self.Layout()
-        
+        self.total_label.SetLabel(f"Total: {total_current:.3f} A")
         self._update_visualization()
     
     def _update_visualization(self):
-        """Update PCB visualization with current points."""
+        """Update PCB visualization to highlight nets in current paths."""
+        # Clear old highlights
         self.viz_panel.current_points.clear()
         
-        for cp in self.config.current_injection_points:
-            self.viz_panel.add_current_point(
-                cp.point_id, cp.x_mm, cp.y_mm,
-                is_source=(cp.current_a > 0),
-                current_a=abs(cp.current_a)
-            )
+        # For each path, highlight traces on those nets
+        # (simplified - just show indicator at board center for now)
+        for cp in self.config.current_paths:
+            # We'd need trace-to-net mapping for full highlighting
+            # For now, this is a placeholder
+            pass
         
         self.viz_panel.Refresh()
     
-    def _on_select(self, event):
-        """Highlight selected point on PCB."""
-        idx = event.GetIndex()
-        if idx >= 0:
-            point_id = self.list.GetItemText(idx, 0)
-            self.viz_panel.clear_selection()
-            self.viz_panel.select_current_point(point_id)
-            self.viz_panel.Refresh()
-    
-    def _on_add(self, point_type: str):
-        """Add current injection point."""
-        net = self.net_choice.GetStringSelection()
-        if not net or net == "(no nets)":
-            wx.MessageBox("Please select a net", "Add Current Point", wx.ICON_WARNING)
+    def _on_add(self, event):
+        """Add current path."""
+        source = self.source_choice.GetStringSelection()
+        sink = self.sink_choice.GetStringSelection()
+        
+        if source == "(select net)" or sink == "(select net)":
+            wx.MessageBox("Please select source and sink nets", "Add Path", wx.ICON_WARNING)
             return
         
-        # Get point ID
-        existing_ids = {cp.point_id for cp in self.config.current_injection_points}
-        idx = 1
-        while f"CP{idx}" in existing_ids:
-            idx += 1
-        point_id = f"CP{idx}"
-        
-        # Get current value
-        dlg = wx.TextEntryDialog(
-            self, f"Current magnitude (Amps) for {point_type}:",
-            f"Add Current {point_type.title()}", "1.0"
-        )
-        
-        if dlg.ShowModal() != wx.ID_OK:
-            dlg.Destroy()
+        if source == sink:
+            wx.MessageBox("Source and sink nets must be different", "Add Path", wx.ICON_WARNING)
             return
         
         try:
-            current = float(dlg.GetValue())
+            current = float(self.txt_current.GetValue())
             if current <= 0:
                 raise ValueError("Current must be positive")
         except ValueError as e:
-            wx.MessageBox(f"Invalid current value: {e}", "Error", wx.ICON_ERROR)
-            dlg.Destroy()
+            wx.MessageBox(f"Invalid current: {e}", "Error", wx.ICON_ERROR)
             return
         
-        dlg.Destroy()
+        # Generate ID
+        existing_ids = {cp.path_id for cp in self.config.current_paths}
+        idx = 1
+        while f"I{idx}" in existing_ids:
+            idx += 1
         
-        # Sign based on type
-        if point_type == "sink":
-            current = -current
-        
-        # Get position - default to first pad on that net or center of board
-        x_mm = (self.pcb_data.board_outline.min_x + self.pcb_data.board_outline.max_x) / 2
-        y_mm = (self.pcb_data.board_outline.min_y + self.pcb_data.board_outline.max_y) / 2
-        
-        # Try to find a component pad on this net
-        for comp in self.pcb_data.components:
-            for pad in comp.pads:
-                # Check if this is a pad (we'd need net info from PCB)
-                # For now just use component position
-                pass
-        
-        # Create injection point
-        cp = CurrentInjectionPoint(
-            point_id=point_id,
-            net_name=net,
-            x_mm=x_mm,
-            y_mm=y_mm,
+        cp = CurrentPath(
+            path_id=f"I{idx}",
+            source_net=source,
+            sink_net=sink,
             current_a=current,
-            description=f"{'Current source' if current > 0 else 'Current sink'}"
+            description=f"{source} → {sink}"
         )
         
-        self.config.current_injection_points.append(cp)
+        self.config.current_paths.append(cp)
         self._populate_list()
-        
-        # Prompt to set position
-        wx.MessageBox(
-            f"Point '{point_id}' added at board center.\n\n"
-            "Double-click to edit position and current.",
-            "Current Point Added", wx.ICON_INFORMATION
-        )
     
     def _on_edit(self, event):
-        """Edit current injection point."""
+        """Edit current path."""
         idx = self.list.GetFirstSelected()
         if idx < 0:
             return
         
-        point_id = self.list.GetItemText(idx, 0)
+        path_id = self.list.GetItemText(idx, 0)
         
-        for cp in self.config.current_injection_points:
-            if cp.point_id == point_id:
-                self._show_edit_dialog(cp)
+        for cp in self.config.current_paths:
+            if cp.path_id == path_id:
+                dlg = wx.TextEntryDialog(
+                    self, f"Current (Amps) for {cp.source_net} → {cp.sink_net}:",
+                    "Edit Current", str(cp.current_a)
+                )
+                if dlg.ShowModal() == wx.ID_OK:
+                    try:
+                        cp.current_a = float(dlg.GetValue())
+                        self._populate_list()
+                    except ValueError:
+                        pass
+                dlg.Destroy()
                 break
     
-    def _show_edit_dialog(self, cp: CurrentInjectionPoint):
-        """Show edit dialog for current point."""
-        dlg = wx.Dialog(self, title=f"Edit {cp.point_id}", size=(400, 350))
-        
-        panel = wx.Panel(dlg)
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        grid = wx.FlexGridSizer(6, 2, Spacing.SM, Spacing.MD)
-        grid.AddGrowableCol(1)
-        
-        grid.Add(wx.StaticText(panel, label="Point ID:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        txt_id = wx.TextCtrl(panel, value=cp.point_id, size=(200, -1))
-        grid.Add(txt_id, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(panel, label="Net:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        txt_net = wx.TextCtrl(panel, value=cp.net_name, size=(200, -1))
-        grid.Add(txt_net, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(panel, label="Current (A):"), 0, wx.ALIGN_CENTER_VERTICAL)
-        txt_current = wx.TextCtrl(panel, value=f"{cp.current_a:.4f}", size=(200, -1))
-        grid.Add(txt_current, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(panel, label="X (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
-        txt_x = wx.TextCtrl(panel, value=f"{cp.x_mm:.2f}", size=(200, -1))
-        grid.Add(txt_x, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(panel, label="Y (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
-        txt_y = wx.TextCtrl(panel, value=f"{cp.y_mm:.2f}", size=(200, -1))
-        grid.Add(txt_y, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(panel, label="Description:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        txt_desc = wx.TextCtrl(panel, value=cp.description, size=(200, -1))
-        grid.Add(txt_desc, 1, wx.EXPAND)
-        
-        sizer.Add(grid, 0, wx.ALL | wx.EXPAND, Spacing.LG)
-        
-        # Hint
-        hint = wx.StaticText(panel, label="Positive current = source (into board)\n"
-                                          "Negative current = sink (out of board)")
-        hint.SetForegroundColour(Colors.TEXT_SECONDARY)
-        hint.SetFont(Fonts.small())
-        sizer.Add(hint, 0, wx.ALL, Spacing.LG)
-        
-        sizer.AddStretchSpacer()
-        
-        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        btn_sizer.AddStretchSpacer()
-        btn_cancel = wx.Button(panel, wx.ID_CANCEL, "Cancel")
-        btn_sizer.Add(btn_cancel, 0, wx.RIGHT, Spacing.SM)
-        btn_ok = wx.Button(panel, wx.ID_OK, "Save")
-        btn_ok.SetDefault()
-        btn_sizer.Add(btn_ok, 0)
-        sizer.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.LG)
-        
-        panel.SetSizer(sizer)
-        
-        if dlg.ShowModal() == wx.ID_OK:
-            try:
-                cp.point_id = txt_id.GetValue().strip()
-                cp.net_name = txt_net.GetValue().strip()
-                cp.current_a = float(txt_current.GetValue())
-                cp.x_mm = float(txt_x.GetValue())
-                cp.y_mm = float(txt_y.GetValue())
-                cp.description = txt_desc.GetValue().strip()
-                self._populate_list()
-            except ValueError as e:
-                wx.MessageBox(f"Invalid value: {e}", "Error", wx.ICON_ERROR)
-        
-        dlg.Destroy()
-    
     def _on_remove(self, event):
-        """Remove current injection point."""
+        """Remove current path."""
         idx = self.list.GetFirstSelected()
         if idx < 0:
             return
         
-        point_id = self.list.GetItemText(idx, 0)
-        self.config.current_injection_points = [
-            cp for cp in self.config.current_injection_points if cp.point_id != point_id
+        path_id = self.list.GetItemText(idx, 0)
+        self.config.current_paths = [
+            cp for cp in self.config.current_paths if cp.path_id != path_id
         ]
         self._populate_list()
 

@@ -323,7 +323,17 @@ class PythonThermalSolver:
             
             # Solve linear system
             if HAS_SCIPY:
-                T, info = cg(K, Q_total, x0=T, tol=convergence)
+                # scipy.sparse.linalg.cg parameter varies by version
+                # Older versions use 'tol', newer use 'atol'/'rtol'
+                try:
+                    T, info = cg(K, Q_total, x0=T, atol=convergence, rtol=convergence)
+                except TypeError:
+                    # Fallback for older scipy
+                    try:
+                        T, info = cg(K, Q_total, x0=T, tol=convergence)
+                    except TypeError:
+                        T, info = cg(K, Q_total, x0=T)
+                
                 if info != 0:
                     # Fallback to direct solver
                     try:
@@ -463,7 +473,14 @@ class PythonThermalSolver:
             
             # Solve
             if HAS_SCIPY:
-                T_new, info = cg(LHS, RHS, x0=T, tol=1e-8)
+                try:
+                    T_new, info = cg(LHS, RHS, x0=T, atol=1e-8, rtol=1e-8)
+                except TypeError:
+                    try:
+                        T_new, info = cg(LHS, RHS, x0=T, tol=1e-8)
+                    except TypeError:
+                        T_new, info = cg(LHS, RHS, x0=T)
+                
                 if info != 0:
                     T_new = spsolve(LHS.tocsr(), RHS)
             else:

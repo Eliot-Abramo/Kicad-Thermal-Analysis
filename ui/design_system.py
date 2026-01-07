@@ -370,10 +370,10 @@ class ProgressDialog(BaseDialog):
         main_sizer.Add(panel, 1, wx.EXPAND)
         self.SetSizer(main_sizer)
     
-    def update(self, percent: int, message: str):
-        self.gauge.SetValue(min(percent, 100))
+    def update(self, percent, message: str):
+        self.gauge.SetValue(min(int(percent), 100))
         self.label.SetLabel(message)
-        self.percent.SetLabel(f"{percent}%")
+        self.percent.SetLabel(f"{int(percent)}%")
         wx.Yield()
 
 

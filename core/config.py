@@ -15,8 +15,19 @@ from datetime import datetime
 
 
 @dataclass
+class CurrentPath:
+    """Current flow path for Joule heating analysis."""
+    path_id: str = ""
+    source_net: str = ""      # Net where current enters (e.g., VIN, +12V)
+    sink_net: str = ""        # Net where current exits (e.g., GND, PGND)
+    current_a: float = 1.0    # Current magnitude in Amps
+    description: str = ""
+
+
+# Keep for backwards compatibility but mark as legacy
+@dataclass
 class CurrentInjectionPoint:
-    """Current injection point for Joule heating."""
+    """Current injection point for Joule heating (legacy)."""
     point_id: str = ""
     net_name: str = ""
     x_mm: float = 0.0
@@ -142,7 +153,8 @@ class ThermalAnalysisConfig:
     
     stackup: StackupConfig = field(default_factory=StackupConfig)
     layer_mapping: LayerMappingConfig = field(default_factory=LayerMappingConfig)
-    current_injection_points: List[CurrentInjectionPoint] = field(default_factory=list)
+    current_paths: List[CurrentPath] = field(default_factory=list)  # New simplified model
+    current_injection_points: List[CurrentInjectionPoint] = field(default_factory=list)  # Legacy
     component_power: List[ComponentPowerConfig] = field(default_factory=list)
     mounting_points: List[MountingPointConfig] = field(default_factory=list)
     heatsinks: List[HeatsinkConfig] = field(default_factory=list)
