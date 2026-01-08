@@ -1253,33 +1253,78 @@ class MainDialog(BaseFrame):
             from ..solvers.mesh_gen import MeshGenerator
             from ..solvers.thermal_solver import ThermalSolver
             
-            # Generate mesh
-            progress.update(10, "Generating mesh...")
-            mesh_gen = MeshGenerator(self.pcb_data, self.config)
-            mesh = mesh_gen.generate(lambda p, m: progress.update(10 + p // 4, m))
-            
             # Run solver
             solver = ThermalSolver()
-            
-            if self.config.simulation.mode == "transient":
-                result = solver.solve_transient(
-                    mesh,
-                    duration_s=self.config.simulation.duration_s,
-                    timestep_s=self.config.simulation.timestep_s,
-                    initial_temp_c=self.config.simulation.initial_board_temp_c,
-                    chamber_wall_temp_c=self.config.simulation.chamber_wall_temp_c,
-                    include_radiation=self.config.simulation.include_radiation,
-                    output_interval_s=self.config.simulation.output_interval_s,
-                    progress_callback=lambda p, m: progress.update(35 + p * 0.6, m)
-                )
+
+            # Optional electro-thermal coupling: iterate electrical Joule heating and thermal solve
+            heat_mode = getattr(self.config.simulation, 'heat_source_mode', 'component_power')
+            coupling_iters = int(getattr(self.config.simulation, 'electro_thermal_iterations', 1) or 1)
+            coupling_tol = float(getattr(self.config.simulation, 'electro_thermal_tol_c', 0.5) or 0.5)
+
+            result = None
+
+            if (heat_mode == 'current_injection'
+                    and self.config.simulation.mode != 'transient'
+                    and coupling_iters > 1):
+                # NOTE: This uses a global/average temperature update for resistivity (first-order coupling).
+                # A finer per-segment temperature lookup can be added later.
+                t_eff = float(getattr(self.config.simulation, 'initial_board_temp_c', self.config.simulation.ambient_temp_c) or self.config.simulation.ambient_temp_c)
+                last_avg = None
+
+                for it in range(coupling_iters):
+                    setattr(self.config.simulation, '_electrical_temp_c', t_eff)
+
+                    progress.update(10, f"Electro-thermal iteration {it+1}/{coupling_iters}: generating mesh...")
+                    mesh_gen = MeshGenerator(self.pcb_data, self.config)
+                    mesh = mesh_gen.generate(lambda p, m: progress.update(10 + p // 4, m))
+
+                    # Steady-state only for coupling at the moment
+                    result = solver.solve_steady_state(
+                        mesh,
+                        ambient_temp_c=self.config.simulation.ambient_temp_c,
+                        chamber_wall_temp_c=self.config.simulation.chamber_wall_temp_c,
+                        include_radiation=self.config.simulation.include_radiation,
+                        progress_callback=lambda p, m: progress.update(35 + p * 0.6, m)
+                    )
+
+                    if result.error_message:
+                        break
+
+                    t_eff = float(result.avg_temp)
+                    if last_avg is not None and abs(t_eff - last_avg) < coupling_tol:
+                        break
+                    last_avg = t_eff
+
+                try:
+                    delattr(self.config.simulation, '_electrical_temp_c')
+                except Exception:
+                    pass
+
             else:
-                result = solver.solve_steady_state(
-                    mesh,
-                    ambient_temp_c=self.config.simulation.ambient_temp_c,
-                    chamber_wall_temp_c=self.config.simulation.chamber_wall_temp_c,
-                    include_radiation=self.config.simulation.include_radiation,
-                    progress_callback=lambda p, m: progress.update(35 + p * 0.6, m)
-                )
+                # Generate mesh
+                progress.update(10, "Generating mesh...")
+                mesh_gen = MeshGenerator(self.pcb_data, self.config)
+                mesh = mesh_gen.generate(lambda p, m: progress.update(10 + p // 4, m))
+
+                if self.config.simulation.mode == "transient":
+                    result = solver.solve_transient(
+                        mesh,
+                        duration_s=self.config.simulation.duration_s,
+                        timestep_s=self.config.simulation.timestep_s,
+                        initial_temp_c=self.config.simulation.initial_board_temp_c,
+                        chamber_wall_temp_c=self.config.simulation.chamber_wall_temp_c,
+                        include_radiation=self.config.simulation.include_radiation,
+                        output_interval_s=self.config.simulation.output_interval_s,
+                        progress_callback=lambda p, m: progress.update(35 + p * 0.6, m)
+                    )
+                else:
+                    result = solver.solve_steady_state(
+                        mesh,
+                        ambient_temp_c=self.config.simulation.ambient_temp_c,
+                        chamber_wall_temp_c=self.config.simulation.chamber_wall_temp_c,
+                        include_radiation=self.config.simulation.include_radiation,
+                        progress_callback=lambda p, m: progress.update(35 + p * 0.6, m)
+                    )
             
             progress.Destroy()
             

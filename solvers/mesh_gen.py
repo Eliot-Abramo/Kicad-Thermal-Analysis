@@ -492,6 +492,18 @@ class MeshGenerator:
 
         via_plating_m = float(getattr(self.config.simulation, "via_plating_thickness_um", 25.0)) * 1e-6
 
+        # Optional electro-thermal coupling: allow electrical resistivity to depend on the latest temperature estimate
+        rho0 = float(getattr(self.config.simulation, "copper_resistivity_ohm_m", 1.724e-8) or 1.724e-8)
+        alpha = float(getattr(self.config.simulation, "copper_tempco_per_c", 0.00393) or 0.00393)
+        temp_c = getattr(self.config.simulation, "_electrical_temp_c", None)
+        if temp_c is None:
+            temp_c = float(getattr(self.config.simulation, "ambient_temp_c", 25.0) or 25.0)
+        try:
+            temp_c = float(temp_c)
+        except Exception:
+            temp_c = float(getattr(self.config.simulation, "ambient_temp_c", 25.0) or 25.0)
+        copper_rho = rho0 * (1.0 + alpha * (temp_c - 20.0))
+
         # Pre-index nodes by layer_idx for faster lookup during deposition
         nodes_by_layer = {}
         for n in mesh.nodes:
@@ -581,6 +593,7 @@ class MeshGenerator:
                 include_pours=True,
                 plane_grid_mm=float(getattr(self.config.simulation, "plane_grid_mm", 2.0) or 2.0),
                 plane_contact_resistance_ohm=float(getattr(self.config.simulation, "plane_contact_resistance_ohm", 1e-6) or 1e-6),
+                copper_resistivity_ohm_m=float(copper_rho),
                 net_code_filter=net_code if net_code != 0 else None,
             )
 

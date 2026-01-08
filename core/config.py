@@ -170,6 +170,10 @@ class SimulationConfig:
     plane_grid_mm: float = 2.0  # Resistive-plane discretization grid size
     plane_contact_resistance_ohm: float = 1e-6  # Stitch/contact resistance to plane nodes
 
+    # --- Electro-thermal coupling (optional) ---
+    electro_thermal_iterations: int = 1  # >1 enables iterative electro-thermal coupling
+    electro_thermal_tol_c: float = 0.5  # stop when avg temp changes less than this (°C)
+
     # --- Validation / debug outputs ---
     validation_mode: bool = False
     validation_top_n: int = 20

@@ -5,7 +5,7 @@ This ZIP is a **work-in-progress snapshot** of the ongoing refactor toward an in
 It is meant to demonstrate active progress and to provide a **more stable** baseline than the original ZIP.
 Some key industrial features (terminal-based current injection UI) are still in progress, but this snapshot already includes:
 - **Python thermal fallback parity**: Robin BC + radiation linearization for TVAC stability
-- **Copper zone/plane modeling**: sheet-resistance grid for return paths/current spreading
+- **Copper zone/plane modeling**: sheet-resistance grid for return paths/current spreading (pours merged per net/layer to avoid duplicate edges)
 
 ---
 
@@ -33,8 +33,10 @@ Some key industrial features (terminal-based current injection UI) are still in 
   - Solves for node voltages using sparse nodal analysis (SciPy).
   - Computes per-segment Joule losses (**I²R**) and **deposits them onto the thermal mesh** near each copper segment.
 
-**Still not modeled (yet):**
-- Temperature-dependent resistivity iteration (electro-thermal coupling loop)
+**Now modeled (first-order electro-thermal coupling, optional):**
+- Temperature-dependent copper resistivity using a **global/average temperature update** across iterations.
+  Enable with `simulation.electro_thermal_iterations > 1` (steady-state current injection only).
+  This is first-order coupling; a finer per-segment temperature map is planned.
 
 ### Simulation launch gating fixed
 - `Run Simulation` no longer blocks when component power is 0 **if** the mode is `current_injection`
