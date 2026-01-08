@@ -400,7 +400,7 @@ class MeshGenerator:
                 points = [Point2D(p[0], p[1]) for p in hs.polygon_points]
                 
                 for node in mesh.nodes:
-                    if node.layer_idx == 0:  # Top layer
+                    if node.layer_idx == (mesh.nz - 1):  # Bottom layer (B.Cu side)
                         if self._point_in_polygon(node.x, node.y, points):
                             node.k = material.thermal_conductivity
                             node.emissivity = hs.emissivity_override if hs.emissivity_override is not None else getattr(material, 'emissivity', 0.04)
@@ -439,7 +439,7 @@ class MeshGenerator:
             # Find nodes within component footprint
             nodes_in_footprint = []
             for node in mesh.nodes:
-                if node.layer_idx == 0:  # Top layer
+                if node.layer_idx == (mesh.nz - 1):  # Bottom copper / mounting side
                     if min_x <= node.x <= max_x and min_y <= node.y <= max_y:
                         nodes_in_footprint.append(node)
             
@@ -451,124 +451,202 @@ class MeshGenerator:
     
     def _add_current_heat_sources(self, mesh: ThermalMesh):
         """Add heat sources from current paths (I²R Joule heating).
-        
-        This model:
-        1. For each current path (source net → sink net at X amps)
-        2. Find all traces on those nets
-        3. Calculate I²R heat for each trace segment
-        4. Distribute heat to mesh nodes along traces
+
+        This replaces the previous 'distribute over all traces' heuristic with an actual
+        DC resistive-network solve on the routed copper for the relevant net.
+
+        Model (per current path):
+          1) Identify source and sink terminals (preferred: REF:PAD)
+          2) Build a resistive network from traces + vias on the *net of interest*
+          3) Solve G·V = I (nodal analysis) for node voltages
+          4) Compute per-segment power: P = I_seg²·R_seg
+          5) Deposit power onto the thermal mesh close to each copper segment
+
+        Notes / limitations (current implementation):
+          - Zones are not yet discretized into a 2D sheet-resistance grid (planned).
+          - Temperature dependence of copper resistivity is not iterated (planned coupling).
+          - For inner layers, power is deposited to an approximate Z slice based on layer order.
         """
-        from ..core.constants import PhysicalConstants
-        
-        # Get current paths
-        current_paths = self.config.current_paths
+        current_paths = getattr(self.config, "current_paths", []) or []
         if not current_paths:
             return
-        
-        # Get copper properties
-        copper_resistivity = PhysicalConstants.COPPER_RESISTIVITY  # Ω·m at 20°C
-        
-        # Build net-to-traces mapping
-        # First, we need to know which net each trace belongs to
-        # This requires extracting net info from PCB data
-        trace_nets = {}  # trace_id -> net_name
-        
-        # For now, we'll apply heat to ALL traces proportionally
-        # A full implementation would use actual net connectivity
-        
-        # Calculate total trace resistance
-        total_trace_length = 0.0
-        trace_segments = []
-        
-        for trace in self.pcb_data.traces:
-            dx = trace.end.x - trace.start.x
-            dy = trace.end.y - trace.start.y
-            length_m = math.sqrt(dx*dx + dy*dy) * 1e-3  # mm to m
-            
-            if length_m < 1e-6:
-                continue
-            
-            # Copper thickness (35um = 1oz default)
-            copper_thickness_m = 35e-6
-            width_m = trace.width * 1e-3
-            area_m2 = width_m * copper_thickness_m
-            
-            if area_m2 < 1e-12:
-                continue
-            
-            # Trace resistance R = ρL/A
-            resistance = copper_resistivity * length_m / area_m2
-            
-            trace_segments.append({
-                'start': (trace.start.x, trace.start.y),
-                'end': (trace.end.x, trace.end.y),
-                'resistance': resistance,
-                'length_mm': length_m * 1000,
-                'net': getattr(trace, 'net', '')  # May not have net info
-            })
-            total_trace_length += length_m * 1000
-        
-        if not trace_segments:
+
+        # Deferred import: heavy numerical code + scipy
+        try:
+            from ..solvers.current_solver import CurrentDistributionSolver
+            from ..core.config import CurrentInjectionPoint
+        except Exception:
             return
-        
-        # For each current path, calculate heat
-        for cp in current_paths:
-            current = cp.current_a
-            if current <= 0:
-                continue
-            
-            # Find traces on source or sink net
-            # For simplified model: distribute current through all traces proportionally
-            # More accurate: only traces connecting source to sink nets
-            
-            relevant_traces = []
-            for seg in trace_segments:
-                # Include trace if it's on a power net (simplified heuristic)
-                # In a full implementation, we'd trace connectivity from source to sink
-                net = seg.get('net', '')
-                if net == cp.source_net or net == cp.sink_net:
-                    relevant_traces.append(seg)
-            
-            # If no net info, use all traces (simplified fallback)
-            if not relevant_traces:
-                relevant_traces = trace_segments
-            
-            # Calculate total resistance of current path
-            # Simplified: sum of all trace resistances (actual would be network analysis)
-            total_resistance = sum(t['resistance'] for t in relevant_traces)
-            
-            # Total power P = I²R
-            total_power = current * current * total_resistance
-            
-            # Distribute heat proportionally by trace resistance (I²R per segment)
-            for seg in relevant_traces:
-                if total_resistance > 0:
-                    seg_power = (seg['resistance'] / total_resistance) * total_power
-                else:
-                    seg_power = 0
-                
-                if seg_power <= 0:
+
+        # Copper thickness per layer (meters)
+        copper_thickness_m = {}
+        try:
+            for l in self.config.stackup.layers:
+                if getattr(l, "layer_type", "") == "copper":
+                    copper_thickness_m[l.name] = float(l.thickness_um) * 1e-6
+        except Exception:
+            pass
+        if not copper_thickness_m:
+            copper_thickness_m["F.Cu"] = 35e-6
+            copper_thickness_m["B.Cu"] = 35e-6
+
+        via_plating_m = float(getattr(self.config.simulation, "via_plating_thickness_um", 25.0)) * 1e-6
+
+        # Pre-index nodes by layer_idx for faster lookup during deposition
+        nodes_by_layer = {}
+        for n in mesh.nodes:
+            nodes_by_layer.setdefault(n.layer_idx, []).append(n)
+
+        def layer_to_z_idx(layer_name: str) -> int:
+            # F.Cu -> top, B.Cu -> bottom, inner layers mapped by copper order.
+            lname = (layer_name or "").strip()
+            if lname == "F.Cu":
+                return 0
+            if lname == "B.Cu":
+                return max(0, mesh.nz - 1)
+
+            # Map inner copper layers by order index
+            copper_layers = getattr(self.pcb_data, "copper_layers", None) or []
+            if lname in copper_layers and len(copper_layers) > 1:
+                i = copper_layers.index(lname)
+                return int(round(i * (mesh.nz - 1) / (len(copper_layers) - 1)))
+            return 0
+
+        def find_pad_terminal(ref: str, pad_name: str):
+            ref = (ref or "").strip()
+            pad_name = (pad_name or "").strip()
+            if not ref or not pad_name:
+                return None
+            for c in getattr(self.pcb_data, "components", []) or []:
+                if (c.reference or "").strip() != ref:
                     continue
-                
-                # Find mesh nodes near this trace
-                start_x, start_y = seg['start']
-                end_x, end_y = seg['end']
-                
-                trace_nodes = []
-                for node in mesh.nodes:
-                    if node.layer_idx == 0:  # Top layer
-                        dist = self._point_to_segment_distance(
-                            node.x, node.y, start_x, start_y, end_x, end_y
-                        )
-                        if dist < 1.0:  # Within 1mm
-                            trace_nodes.append(node)
-                
-                # Distribute segment power to nodes
-                if trace_nodes:
-                    power_per_node = seg_power / len(trace_nodes)
-                    for node in trace_nodes:
-                        node.heat_source += power_per_node
-    
+                for p in getattr(c, "pads", []) or []:
+                    if (getattr(p, "pad_name", "") or "").strip() == pad_name:
+                        return p
+            return None
+
+        # Solve each current path independently to keep matrices small and avoid cross-net coupling
+        for cp in current_paths:
+            try:
+                current_a = float(getattr(cp, "current_a", 0.0) or 0.0)
+            except Exception:
+                current_a = 0.0
+            if current_a <= 0:
+                continue
+
+            # Prefer explicit terminals (REF:PAD)
+            src_pad = find_pad_terminal(getattr(cp, "source_ref", ""), getattr(cp, "source_pad", ""))
+            snk_pad = find_pad_terminal(getattr(cp, "sink_ref", ""), getattr(cp, "sink_pad", ""))
+
+            if not src_pad or not snk_pad:
+                # Fallback to legacy net-to-net mode is not reliable without a full terminal selection;
+                # keep it explicit to avoid silently wrong results.
+                continue
+
+            net_name = getattr(src_pad, "net_name", "") or getattr(src_pad, "net", "")
+            net_code = int(getattr(src_pad, "net_code", 0) or 0)
+
+            if int(getattr(snk_pad, "net_code", 0) or 0) != net_code:
+                # Mismatched terminals (different nets) - skip
+                continue
+
+            # Choose representative copper layer for pads (prefer copper)
+            src_layer = "F.Cu"
+            snk_layer = "F.Cu"
+            try:
+                if getattr(src_pad, "layers", None):
+                    src_layer = src_pad.layers[0]
+                if getattr(snk_pad, "layers", None):
+                    snk_layer = snk_pad.layers[0]
+            except Exception:
+                pass
+
+            injections = [
+                CurrentInjectionPoint(point_id=f"{cp.path_id}_SRC", net_name=net_name,
+                                     x_mm=float(src_pad.position.x), y_mm=float(src_pad.position.y),
+                                     layer=src_layer, current_a=current_a,
+                                     description=f"{getattr(cp,'source_ref','')}:{getattr(cp,'source_pad','')}"),
+                CurrentInjectionPoint(point_id=f"{cp.path_id}_SNK", net_name=net_name,
+                                     x_mm=float(snk_pad.position.x), y_mm=float(snk_pad.position.y),
+                                     layer=snk_layer, current_a=-current_a,
+                                     description=f"{getattr(cp,'sink_ref','')}:{getattr(cp,'sink_pad','')}"),
+            ]
+
+            solver = CurrentDistributionSolver(self.pcb_data)
+            solver.build_network(
+                copper_thickness=copper_thickness_m,
+                include_ac_effects=bool(getattr(self.config.simulation, "include_ac_effects", False)),
+                frequency_hz=0.0,
+                via_plating_thickness_m=via_plating_m,
+                net_code_filter=net_code if net_code != 0 else None,
+            )
+
+            res = solver.solve(injections)
+
+            # Deposit per-segment power onto mesh nodes
+            for seg_id, pwr in (res.segment_power or {}).items():
+                try:
+                    pwr = float(pwr)
+                except Exception:
+                    continue
+                if pwr <= 0:
+                    continue
+
+                seg = solver.segments.get(seg_id)
+                if not seg:
+                    continue
+
+                # Trace segments
+                if getattr(seg, "trace_ref", None) is not None:
+                    tr = seg.trace_ref
+                    z_idx = layer_to_z_idx(getattr(tr, "layer", "F.Cu"))
+                    candidates = nodes_by_layer.get(z_idx, [])
+                    if not candidates:
+                        continue
+
+                    x1, y1 = float(tr.start.x), float(tr.start.y)
+                    x2, y2 = float(tr.end.x), float(tr.end.y)
+
+                    # radius = half-width + tolerance (mm)
+                    w = float(getattr(tr, "width_mm", 0.0) or getattr(tr, "width", 0.0) or 0.0)
+                    radius = max(0.5, 0.5 * w + 0.3)
+
+                    near = []
+                    for n in candidates:
+                        if self._point_to_segment_distance(n.x, n.y, x1, y1, x2, y2) <= radius:
+                            near.append(n)
+
+                    if near:
+                        per = pwr / len(near)
+                        for n in near:
+                            n.heat_source += per
+                    continue
+
+                # Via / barrel segments: split power at both endpoints and deposit near via location
+                try:
+                    n1 = solver.nodes.get(seg.node1_id)
+                    n2 = solver.nodes.get(seg.node2_id)
+                    if not n1 or not n2:
+                        continue
+                    for node_e, frac in ((n1, 0.5), (n2, 0.5)):
+                        z_idx = layer_to_z_idx(getattr(node_e, "layer", "F.Cu"))
+                        candidates = nodes_by_layer.get(z_idx, [])
+                        if not candidates:
+                            continue
+                        vx, vy = float(node_e.position.x), float(node_e.position.y)
+                        near = []
+                        for n in candidates:
+                            if (n.x - vx) * (n.x - vx) + (n.y - vy) * (n.y - vy) <= (0.8 * 0.8):
+                                near.append(n)
+                        if near:
+                            per = (pwr * frac) / len(near)
+                            for n in near:
+                                n.heat_source += per
+                except Exception:
+                    continue
+
+
+
     def _point_to_segment_distance(self, px: float, py: float,
                                     x1: float, y1: float, x2: float, y2: float) -> float:
         """Calculate distance from point to line segment."""
@@ -654,14 +732,24 @@ class MeshGenerator:
         node.neighbors[neighbor_idx] = G
     
     def _apply_boundary_conditions(self, mesh: ThermalMesh):
-        """Apply boundary conditions from mounting points."""
+        """Apply boundary conditions from mounting points.
+
+        Industrial default:
+          - If a mounting point has no explicit fixed temperature, we pin it to
+            SimulationConfig.mounting_box_temp_c (cold plate / enclosure) for a
+            first-order TVAC conduction path.
+        """
         for mp in self.config.mounting_points:
-            if mp.fixed_temp_c is not None:
+            fixed = mp.fixed_temp_c
+            if fixed is None:
+                fixed = getattr(self.config.simulation, 'mounting_box_temp_c', None)
+
+            if fixed is not None:
                 # Find nearest node
                 nearest_node = self._find_nearest_node(mesh, mp.x_mm, mp.y_mm)
                 if nearest_node:
                     nearest_node.is_fixed_temp = True
-                    nearest_node.fixed_temp = mp.fixed_temp_c
+                    nearest_node.fixed_temp = float(fixed)
     
     def _find_nearest_node(self, mesh: ThermalMesh, x: float, y: float) -> Optional[ThermalNode]:
         """Find nearest node to given coordinates."""

@@ -16,11 +16,25 @@ from datetime import datetime
 
 @dataclass
 class CurrentPath:
-    """Current flow path for Joule heating analysis."""
+    """Current flow path for Joule heating analysis.
+
+    This is evolving from a net-to-net concept toward an unambiguous terminal-based definition.
+    - Legacy: source_net/sink_net
+    - New: source_ref/source_pad and sink_ref/sink_pad (KiCad footprint reference + pad name)
+    """
     path_id: str = ""
-    source_net: str = ""      # Net where current enters (e.g., VIN, +12V)
-    sink_net: str = ""        # Net where current exits (e.g., GND, PGND)
-    current_a: float = 1.0    # Current magnitude in Amps
+
+    # New (preferred): explicit terminals (REF:PAD)
+    source_ref: str = ""   # e.g. "J1"
+    source_pad: str = ""   # e.g. "1"
+    sink_ref: str = ""     # e.g. "U3"
+    sink_pad: str = ""     # e.g. "5"
+
+    # Legacy (kept for backward compatibility)
+    source_net: str = ""   # Net where current enters (e.g., VIN, +12V)
+    sink_net: str = ""     # Net where current exits (e.g., GND, PGND)
+
+    current_a: float = 1.0   # Current magnitude in Amps
     description: str = ""
 
 
@@ -35,6 +49,18 @@ class CurrentInjectionPoint:
     layer: str = "F.Cu"
     current_a: float = 0.0
     description: str = ""
+
+@dataclass
+class TraceCurrentOverride:
+    """Per-trace current override (legacy helper).
+
+    Some current workflows want to force a specific current through a specific segment.
+    Kept to preserve compatibility with older solver code paths.
+    """
+    trace_id: str = ""
+    current_a: float = 0.0
+    direction: int = 1  # +1 or -1
+
 
 
 @dataclass
@@ -136,6 +162,17 @@ class SimulationConfig:
     use_gpu: bool = False
     num_threads: int = 0  # 0 = auto
 
+    # --- Electrical / mounting parameters (industrial defaults) ---
+    mounting_box_temp_c: float = 25.0  # Mounting fixture temperature (box / cold plate)
+    copper_resistivity_ohm_m: float = 1.724e-8  # Copper resistivity at 20°C
+    copper_tempco_per_c: float = 0.00393  # Copper temperature coefficient (1/°C)
+    via_plating_thickness_um: float = 25.0  # Via barrel copper plating thickness
+    plane_grid_mm: float = 2.0  # Resistive-plane discretization grid size
+
+    # --- Validation / debug outputs ---
+    validation_mode: bool = False
+    validation_top_n: int = 20
+
 
 @dataclass
 class LayerMappingConfig:
@@ -204,6 +241,12 @@ class ThermalAnalysisConfig:
     def from_dict(cls, data: Dict[str, Any]) -> 'ThermalAnalysisConfig':
         """Create from dictionary."""
         config = cls()
+
+        def _filter_kwargs(dc_type, d: Dict[str, Any]) -> Dict[str, Any]:
+            """Filter dict keys to those accepted by the dataclass constructor."""
+            allowed = getattr(dc_type, '__dataclass_fields__', {}).keys()
+            return {k: v for k, v in (d or {}).items() if k in allowed}
+
         
         if 'version' in data:
             config.version = data['version']
@@ -223,27 +266,31 @@ class ThermalAnalysisConfig:
         
         # Layer mapping
         if 'layer_mapping' in data:
-            config.layer_mapping = LayerMappingConfig(**data['layer_mapping'])
+            config.layer_mapping = LayerMappingConfig(**_filter_kwargs(LayerMappingConfig, data['layer_mapping']))
         
         # Component power
         if 'component_power' in data:
-            config.component_power = [ComponentPowerConfig(**cp) for cp in data['component_power']]
+            config.component_power = [ComponentPowerConfig(**_filter_kwargs(ComponentPowerConfig, cp)) for cp in data['component_power']]
         
         # Mounting points
         if 'mounting_points' in data:
-            config.mounting_points = [MountingPointConfig(**mp) for mp in data['mounting_points']]
+            config.mounting_points = [MountingPointConfig(**_filter_kwargs(MountingPointConfig, mp)) for mp in data['mounting_points']]
         
         # Heatsinks
         if 'heatsinks' in data:
-            config.heatsinks = [HeatsinkConfig(**hs) for hs in data['heatsinks']]
+            config.heatsinks = [HeatsinkConfig(**_filter_kwargs(HeatsinkConfig, hs)) for hs in data['heatsinks']]
         
         # Current injection
         if 'current_injection_points' in data:
-            config.current_injection_points = [CurrentInjectionPoint(**p) for p in data['current_injection_points']]
+            config.current_injection_points = [CurrentInjectionPoint(**_filter_kwargs(CurrentInjectionPoint, p)) for p in data['current_injection_points']]
         
+        # Current paths (new simplified model)
+        if 'current_paths' in data:
+            config.current_paths = [CurrentPath(**_filter_kwargs(CurrentPath, p)) for p in data['current_paths']]
+
         # Simulation
         if 'simulation' in data:
-            config.simulation = SimulationConfig(**data['simulation'])
+            config.simulation = SimulationConfig(**_filter_kwargs(SimulationConfig, data['simulation']))
         
         return config
 
@@ -324,5 +371,5 @@ __all__ = [
     'ThermalAnalysisConfig', 'ConfigManager',
     'ComponentPowerConfig', 'HeatsinkConfig', 'MountingPointConfig',
     'StackupConfig', 'StackupLayerConfig', 'SimulationConfig',
-    'LayerMappingConfig', 'CurrentInjectionPoint',
+    'LayerMappingConfig', 'CurrentPath', 'CurrentInjectionPoint', 'TraceCurrentOverride',
 ]

@@ -55,6 +55,20 @@ class TVACThermalAnalyzerPlugin(pcbnew.ActionPlugin if HAS_PCBNEW else object):
         """Execute the plugin."""
         # Deferred imports to avoid loading issues
         import wx
+        # Hard dependency check (KiCad runtime Python environment)
+        try:
+            import numpy  # noqa: F401
+            import scipy  # noqa: F401
+        except Exception as e:
+            wx.MessageBox(
+                "TVAC Thermal Analyzer requires NumPy + SciPy.\n\n"
+                f"Import error: {e}\n\n"
+                "Please install numpy/scipy into KiCad's Python environment.",
+                "Missing Dependencies",
+                wx.ICON_ERROR
+            )
+            return
+
         
         try:
             from .ui.main_dialog import MainDialog

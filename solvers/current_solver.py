@@ -18,7 +18,19 @@ import math
 from ..core.pcb_extractor import (
     PCBData, Point2D, TraceSegment, Via, CopperPour, Pad, Component
 )
-from ..core.config import CurrentInjectionPoint, TraceCurrentOverride
+try:
+    from ..core.config import CurrentInjectionPoint, TraceCurrentOverride
+except Exception:  # pragma: no cover
+    from ..core.config import CurrentInjectionPoint
+    from dataclasses import dataclass
+
+    @dataclass
+    class TraceCurrentOverride:
+        """Fallback legacy override dataclass (kept for backward compatibility)."""
+        trace_id: str = ""
+        current_a: float = 0.0
+        direction: int = 1
+
 from ..core.constants import MaterialsDatabase, PhysicalConstants
 from ..utils.logger import get_logger, timed_function
 
@@ -122,9 +134,11 @@ class CurrentDistributionSolver:
         self._segment_counter = 0
     
     @timed_function("current_network_build")
-    def build_network(self, copper_thickness: Dict[str, float], 
+    def build_network(self, copper_thickness: Dict[str, float],
                      include_ac_effects: bool = False,
-                     frequency_hz: float = 0.0):
+                     frequency_hz: float = 0.0,
+                     via_plating_thickness_m: float = 25e-6,
+                     net_code_filter: Optional[int] = None):
         """
         Build electrical network from PCB geometry.
         
@@ -149,6 +163,8 @@ class CurrentDistributionSolver:
         
         # Build network from traces
         for trace in self.pcb_data.traces:
+            if net_code_filter is not None and getattr(trace, 'net_code', None) != net_code_filter:
+                continue
             net_code = trace.net_code
             layer = trace.layer
             
@@ -208,7 +224,7 @@ class CurrentDistributionSolver:
             nets_processed.add(net_code)
         
         # Add vias as connections between layers
-        self._add_via_connections(copper_thickness, copper)
+        self._add_via_connections(copper_thickness, copper, via_plating_thickness_m, net_code_filter)
         
         self.logger.info(f"Network built: {len(self.nodes)} nodes, {len(self.segments)} segments")
     
@@ -216,7 +232,7 @@ class CurrentDistributionSolver:
                            net_code: int, net_name: str) -> int:
         """Get existing node or create new one at position."""
         # Round position to avoid floating point comparison issues
-        key = (round(position.x, 4), round(position.y, 4), layer)
+        key = (round(position.x, 4), round(position.y, 4), layer, int(net_code))
         
         if key in self.position_to_node:
             return self.position_to_node[key]
@@ -236,21 +252,25 @@ class CurrentDistributionSolver:
         
         return node.node_id
     
-    def _add_via_connections(self, copper_thickness: Dict[str, float], copper_material):
+    def _add_via_connections(self, copper_thickness: Dict[str, float], copper_material,
+                             via_plating_thickness_m: float = 25e-6,
+                             net_code_filter: Optional[int] = None):
         """Add electrical connections through vias."""
         for via in self.pcb_data.vias:
+            if net_code_filter is not None and getattr(via, 'net_code', None) != net_code_filter:
+                continue
             # Find nodes at via position on different layers
             via_nodes = []
             
             for layer in self.pcb_data.copper_layers:
-                key = (round(via.position.x, 4), round(via.position.y, 4), layer)
+                key = (round(via.position.x, 4), round(via.position.y, 4), layer, int(getattr(via, 'net_code', 0)))
                 if key in self.position_to_node:
                     via_nodes.append((layer, self.position_to_node[key]))
             
             # If no existing nodes, create them
             if len(via_nodes) < 2:
                 for layer in self.pcb_data.copper_layers:
-                    key = (round(via.position.x, 4), round(via.position.y, 4), layer)
+                    key = (round(via.position.x, 4), round(via.position.y, 4), layer, int(getattr(via, 'net_code', 0)))
                     if key not in self.position_to_node:
                         node_id = self._get_or_create_node(
                             via.position, layer, via.net_code, via.net_name
@@ -267,7 +287,7 @@ class CurrentDistributionSolver:
                 
                 # Calculate via barrel resistance
                 # Resistance of hollow cylinder
-                plating_thickness = 25e-6  # Typical 25µm plating
+                plating_thickness = float(via_plating_thickness_m)  # Via barrel copper plating thickness
                 outer_radius = via.drill_mm / 2000 + plating_thickness
                 inner_radius = via.drill_mm / 2000
                 
@@ -276,7 +296,10 @@ class CurrentDistributionSolver:
                 layer2_idx = self.pcb_data.copper_layers.index(layer2) if layer2 in self.pcb_data.copper_layers else 0
                 
                 # Approximate via length
-                via_length = 0.2e-3 * abs(layer2_idx - layer1_idx)  # ~0.2mm per layer gap
+                board_thickness_m = float(getattr(self.pcb_data, 'board_thickness_mm', 1.6)) / 1000.0
+                n_gaps = max(1, len(getattr(self.pcb_data, 'copper_layers', [])) - 1)
+                gap_m = board_thickness_m / n_gaps
+                via_length = gap_m * abs(layer2_idx - layer1_idx)
                 
                 cross_section = math.pi * (outer_radius**2 - inner_radius**2)
                 

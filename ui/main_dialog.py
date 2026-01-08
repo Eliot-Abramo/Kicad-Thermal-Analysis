@@ -1209,17 +1209,39 @@ class MainDialog(BaseFrame):
         """Run thermal simulation."""
         # Save current settings
         self.sim_panel.save_settings()
-        
-        # Check for power sources
+
+        # Check for heat sources based on selected mode
+        heat_mode = getattr(self.config.simulation, 'heat_source_mode', 'component_power')
+
         total_power = sum(cp.power_w for cp in self.config.component_power)
-        if total_power <= 0:
-            wx.MessageBox(
-                "No power dissipation defined.\n\n"
-                "Please set power values for heat-generating components.",
-                "No Heat Sources", wx.ICON_WARNING
-            )
-            return
-        
+        has_current_paths = bool(getattr(self.config, 'current_paths', [])) or bool(getattr(self.config, 'current_injection_points', []))
+
+        if heat_mode == "component_power":
+            if total_power <= 0:
+                wx.MessageBox(
+                    "No power dissipation defined.\n\n"
+                    "Please set power values for heat-generating components, or switch to Current Injection mode.",
+                    "No Heat Sources", wx.ICON_WARNING
+                )
+                return
+        elif heat_mode == "current_injection":
+            if not has_current_paths:
+                wx.MessageBox(
+                    "No current paths defined.\n\n"
+                    "Please define at least one current path/injection before running Current Injection mode.",
+                    "No Current Paths", wx.ICON_WARNING
+                )
+                return
+        else:
+            # Unknown mode - be conservative
+            if total_power <= 0 and not has_current_paths:
+                wx.MessageBox(
+                    "No heat sources defined.\n\n"
+                    "Please set component power or define current paths.",
+                    "No Heat Sources", wx.ICON_WARNING
+                )
+                return
+
         # Run simulation
         progress = ProgressDialog(self, "Running Thermal Simulation")
         progress.Show()

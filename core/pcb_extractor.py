@@ -30,6 +30,11 @@ class Point2D:
 @dataclass
 class Pad:
     """Component pad."""
+    reference: str = ""         # Footprint reference (e.g. "U1")
+    pad_name: str = ""          # Pad name/number (e.g. "1")
+    net: str = ""               # Net name (legacy alias)
+    net_name: str = ""          # Net name
+    net_code: int = 0            # KiCad internal net code
     position: Point2D = field(default_factory=Point2D)
     width: float = 0.0
     height: float = 0.0
@@ -71,30 +76,90 @@ class Component:
 @dataclass
 class TraceSegment:
     """PCB trace segment."""
+    segment_id: str = ""        # UUID if available
+    net: str = ""               # Net name (legacy alias)
+    net_name: str = ""          # Net name
+    net_code: int = 0           # KiCad internal net code
     start: Point2D = field(default_factory=Point2D)
     end: Point2D = field(default_factory=Point2D)
-    width: float = 0.0
-    layer: str = ""
-    net: str = ""
+    width: float = 0.0          # Width in mm (legacy alias)
+    width_mm: float = 0.0       # Width in mm
+    length_mm: float = 0.0      # Segment length in mm
+    layer: str = ""             # Layer name (e.g. F.Cu)
+
+    def __post_init__(self):
+        # Keep legacy aliases consistent if only one is provided
+        if self.width_mm <= 0 and self.width > 0:
+            self.width_mm = self.width
+        if self.width <= 0 and self.width_mm > 0:
+            self.width = self.width_mm
+        if not self.net_name and self.net:
+            self.net_name = self.net
+        if not self.net and self.net_name:
+            self.net = self.net_name
+        if self.length_mm <= 0 and (self.start or self.end):
+            dx = (self.end.x - self.start.x)
+            dy = (self.end.y - self.start.y)
+            self.length_mm = math.sqrt(dx*dx + dy*dy)
+
+
 
 
 @dataclass
 class Via:
     """Through or blind via."""
+    via_id: str = ""
     position: Point2D = field(default_factory=Point2D)
+
+    # Legacy (mm)
     drill: float = 0.0
     diameter: float = 0.0
     net: str = ""
-    via_type: str = "through"
+
+    # New explicit fields
+    drill_mm: float = 0.0
+    diameter_mm: float = 0.0
+    net_name: str = ""
+    net_code: int = 0
+    via_type: str = "through"  # through, blind, micro
+    start_layer: str = ""      # optional
+    end_layer: str = ""        # optional
+
+    def __post_init__(self):
+        if self.drill_mm <= 0 and self.drill > 0:
+            self.drill_mm = self.drill
+        if self.diameter_mm <= 0 and self.diameter > 0:
+            self.diameter_mm = self.diameter
+        if self.drill <= 0 and self.drill_mm > 0:
+            self.drill = self.drill_mm
+        if self.diameter <= 0 and self.diameter_mm > 0:
+            self.diameter = self.diameter_mm
+        if not self.net_name and self.net:
+            self.net_name = self.net
+        if not self.net and self.net_name:
+            self.net = self.net_name
+
+
 
 
 @dataclass
 class CopperPour:
     """Copper zone/pour."""
+    zone_id: str = ""
     outline: List[Point2D] = field(default_factory=list)
     layer: str = ""
-    net: str = ""
+    net: str = ""        # legacy alias
+    net_name: str = ""
+    net_code: int = 0
     priority: int = 0
+
+    def __post_init__(self):
+        if not self.net_name and self.net:
+            self.net_name = self.net
+        if not self.net and self.net_name:
+            self.net = self.net_name
+
+
 
 
 @dataclass
@@ -165,6 +230,8 @@ class UserLayerShape:
 @dataclass
 class PCBData:
     """Complete extracted PCB data."""
+    board_thickness_mm: float = 1.6
+    copper_layers: List[str] = field(default_factory=list)
     board_outline: BoardOutline = field(default_factory=BoardOutline)
     components: List[Component] = field(default_factory=list)
     traces: List[TraceSegment] = field(default_factory=list)
@@ -193,6 +260,8 @@ class PCBExtractor:
         
         data.board_outline = self._extract_outline()
         data.nets = self._extract_nets()
+        data.copper_layers = self._extract_copper_layers()
+        data.board_thickness_mm = self._extract_board_thickness_mm()
         data.components = self._extract_components()
         data.traces = self._extract_traces()
         data.vias = self._extract_vias()
@@ -250,6 +319,62 @@ class PCBExtractor:
         
         return nets
     
+
+    def _extract_copper_layers(self) -> List[str]:
+        """Extract enabled copper layer names in stack order.
+
+        This is a best-effort helper: KiCad's pcbnew API differs across versions.
+        We return at least ['F.Cu','B.Cu'] when available.
+        """
+        if not HAS_PCBNEW:
+            return ["F.Cu", "B.Cu"]
+
+        layers: List[str] = []
+        try:
+            # Newer KiCad exposes helpers on pcbnew module
+            if hasattr(pcbnew, "PCB_LAYER_ID_COUNT") and hasattr(pcbnew, "IsCopperLayer"):
+                for lid in range(int(pcbnew.PCB_LAYER_ID_COUNT)):
+                    try:
+                        if pcbnew.IsCopperLayer(lid) and self.board.IsLayerEnabled(lid):
+                            layers.append(self.board.GetLayerName(lid))
+                    except Exception:
+                        continue
+            else:
+                # Fallback: assume standard naming from copper layer count
+                count = int(self.board.GetCopperLayerCount()) if hasattr(self.board, "GetCopperLayerCount") else 2
+                if count <= 2:
+                    layers = ["F.Cu", "B.Cu"]
+                else:
+                    layers = ["F.Cu"] + [f"In{i}.Cu" for i in range(1, count-1)] + ["B.Cu"]
+        except Exception:
+            layers = ["F.Cu", "B.Cu"]
+
+        # Ensure top/bottom exist
+        if "F.Cu" not in layers:
+            layers.insert(0, "F.Cu")
+        if "B.Cu" not in layers:
+            layers.append("B.Cu")
+        return layers
+
+    def _extract_board_thickness_mm(self) -> float:
+        """Best-effort extraction of board thickness in mm (fallback 1.6mm)."""
+        if not HAS_PCBNEW:
+            return 1.6
+        # pcbnew API varies; use design settings if available
+        try:
+            if hasattr(self.board, "GetDesignSettings"):
+                ds = self.board.GetDesignSettings()
+                for attr in ("GetBoardThickness", "GetBoardThicknessMM"):
+                    if hasattr(ds, attr):
+                        v = getattr(ds, attr)()
+                        # Heuristic: pcbnew sometimes returns nm
+                        if v > 1000:
+                            return float(v) * self.SCALE
+                        return float(v)
+        except Exception:
+            pass
+        return 1.6
+
     def _extract_components(self) -> List[Component]:
         """Extract ONLY actual PCB footprints - no schematic inference."""
         components = []
@@ -283,11 +408,55 @@ class PCBExtractor:
                 pad_pos = pad.GetPosition()
                 pad_size = pad.GetSize()
                 
+                # Pad identity and net information (best-effort across KiCad versions)
+                pad_name = ""
+                for attr in ("GetPadName", "GetName", "GetNumber"):
+                    if hasattr(pad, attr):
+                        try:
+                            pad_name = str(getattr(pad, attr)())
+                            break
+                        except Exception:
+                            pass
+
+                net_name = ""
+                net_code = 0
+                try:
+                    if hasattr(pad, "GetNetname"):
+                        net_name = str(pad.GetNetname())
+                    if hasattr(pad, "GetNetCode"):
+                        net_code = int(pad.GetNetCode())
+                    if (not net_name or net_code == 0) and hasattr(pad, "GetNet") and pad.GetNet():
+                        n = pad.GetNet()
+                        if hasattr(n, "GetNetname"):
+                            net_name = str(n.GetNetname())
+                        if hasattr(n, "GetNetCode"):
+                            net_code = int(n.GetNetCode())
+                except Exception:
+                    pass
+
+                pad_layers: List[str] = []
+                try:
+                    lset = pad.GetLayerSet()
+                    if hasattr(lset, "Seq"):
+                        for lid in lset.Seq():
+                            try:
+                                pad_layers.append(self.board.GetLayerName(int(lid)))
+                            except Exception:
+                                pass
+                except Exception:
+                    pad_layers = []
+
                 pad_obj = Pad(
+                    reference=ref,
+                    pad_name=pad_name,
+                    net=net_name,
+                    net_name=net_name,
+                    net_code=net_code,
                     position=Point2D(pad_pos.x * self.SCALE, pad_pos.y * self.SCALE),
                     width=pad_size.x * self.SCALE,
                     height=pad_size.y * self.SCALE,
                     shape=self._pad_shape_name(pad.GetShape()),
+                    layers=pad_layers,
                     drill=pad.GetDrillSize().x * self.SCALE if pad.GetDrillSize().x > 0 else 0
                 )
                 comp.pads.append(pad_obj)
@@ -397,12 +566,52 @@ class PCBExtractor:
                 start = track.GetStart()
                 end = track.GetEnd()
                 
+                # Trace identity
+                seg_id = ""
+                try:
+                    for attr in ("GetUuid", "GetUUID", "GetUid", "m_Uuid"):
+                        if hasattr(track, attr):
+                            v = getattr(track, attr)
+                            seg_id = str(v() if callable(v) else v)
+                            if seg_id:
+                                break
+                except Exception:
+                    seg_id = ""
+
+                width_mm = track.GetWidth() * self.SCALE
+                layer_name = track.GetLayerName()
+
+                net_name = ""
+                net_code = 0
+                try:
+                    if hasattr(track, "GetNetname"):
+                        net_name = str(track.GetNetname())
+                    if hasattr(track, "GetNetCode"):
+                        net_code = int(track.GetNetCode())
+                    if (not net_name or net_code == 0) and hasattr(track, "GetNet") and track.GetNet():
+                        n = track.GetNet()
+                        if hasattr(n, "GetNetname"):
+                            net_name = str(n.GetNetname())
+                        if hasattr(n, "GetNetCode"):
+                            net_code = int(n.GetNetCode())
+                except Exception:
+                    pass
+
+                dx = (end.x - start.x) * self.SCALE
+                dy = (end.y - start.y) * self.SCALE
+                length_mm = math.sqrt(dx*dx + dy*dy)
+
                 trace = TraceSegment(
+                    segment_id=seg_id,
+                    net=net_name,
+                    net_name=net_name,
+                    net_code=net_code,
                     start=Point2D(start.x * self.SCALE, start.y * self.SCALE),
                     end=Point2D(end.x * self.SCALE, end.y * self.SCALE),
-                    width=track.GetWidth() * self.SCALE,
-                    layer=track.GetLayerName(),
-                    net=track.GetNetname()
+                    width=width_mm,
+                    width_mm=width_mm,
+                    length_mm=length_mm,
+                    layer=layer_name,
                 )
                 traces.append(trace)
         
@@ -419,11 +628,61 @@ class PCBExtractor:
             if track.GetClass() == "PCB_VIA":
                 pos = track.GetPosition()
                 
+                via_id = ""
+                try:
+                    for attr in ("GetUuid", "GetUUID", "GetUid", "m_Uuid"):
+                        if hasattr(track, attr):
+                            v = getattr(track, attr)
+                            via_id = str(v() if callable(v) else v)
+                            if via_id:
+                                break
+                except Exception:
+                    via_id = ""
+
+                drill_mm = track.GetDrillValue() * self.SCALE
+                diameter_mm = track.GetWidth() * self.SCALE
+
+                net_name = ""
+                net_code = 0
+                try:
+                    if hasattr(track, "GetNetname"):
+                        net_name = str(track.GetNetname())
+                    if hasattr(track, "GetNetCode"):
+                        net_code = int(track.GetNetCode())
+                    if (not net_name or net_code == 0) and hasattr(track, "GetNet") and track.GetNet():
+                        n = track.GetNet()
+                        if hasattr(n, "GetNetname"):
+                            net_name = str(n.GetNetname())
+                        if hasattr(n, "GetNetCode"):
+                            net_code = int(n.GetNetCode())
+                except Exception:
+                    pass
+
+                # Start/end layers are only available for blind/buried vias in newer KiCad;
+                # keep best-effort strings (empty means 'through all copper layers').
+                start_layer = ""
+                end_layer = ""
+                try:
+                    if hasattr(track, "GetStartLayer"):
+                        start_layer = self.board.GetLayerName(int(track.GetStartLayer()))
+                    if hasattr(track, "GetEndLayer"):
+                        end_layer = self.board.GetLayerName(int(track.GetEndLayer()))
+                except Exception:
+                    pass
+
                 via = Via(
+                    via_id=via_id,
                     position=Point2D(pos.x * self.SCALE, pos.y * self.SCALE),
-                    drill=track.GetDrillValue() * self.SCALE,
-                    diameter=track.GetWidth() * self.SCALE,
-                    net=track.GetNetname()
+                    drill=drill_mm,
+                    diameter=diameter_mm,
+                    drill_mm=drill_mm,
+                    diameter_mm=diameter_mm,
+                    net=net_name,
+                    net_name=net_name,
+                    net_code=net_code,
+                    via_type="through",
+                    start_layer=start_layer,
+                    end_layer=end_layer,
                 )
                 vias.append(via)
         
@@ -448,10 +707,34 @@ class PCBExtractor:
             except Exception:
                 pass
             
+            zone_id = ""
+            try:
+                for attr in ("GetUuid", "GetUUID", "GetUid", "m_Uuid"):
+                    if hasattr(zone, attr):
+                        v = getattr(zone, attr)
+                        zone_id = str(v() if callable(v) else v)
+                        if zone_id:
+                            break
+            except Exception:
+                zone_id = ""
+
+            net_name = ""
+            net_code = 0
+            try:
+                if hasattr(zone, "GetNetname"):
+                    net_name = str(zone.GetNetname())
+                if hasattr(zone, "GetNetCode"):
+                    net_code = int(zone.GetNetCode())
+            except Exception:
+                pass
+
             pour = CopperPour(
+                zone_id=zone_id,
                 outline=outline_points,
                 layer=zone.GetLayerName(),
-                net=zone.GetNetname(),
+                net=net_name,
+                net_name=net_name,
+                net_code=net_code,
                 priority=zone.GetAssignedPriority()
             )
             pours.append(pour)
