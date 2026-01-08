@@ -63,6 +63,11 @@ class ThermalNode:
     # Boundary conditions
     is_fixed_temp: bool = False
     fixed_temp: float = 25.0
+
+    # Robin (conductance) boundary condition: q = bc_g*(T - bc_temp)
+    # bc_g in W/K, bc_temp in °C (or K offset cancels for deltas)
+    bc_g: float = 0.0
+    bc_temp: float = 25.0
     
     # Neighbors: {neighbor_id: conductance}
     neighbors: Dict[int, float] = field(default_factory=dict)
@@ -109,6 +114,7 @@ class ThermalResult:
     compute_time: float = 0.0
     converged: bool = True
     error_message: str = ""
+    warnings: List[str] = field(default_factory=list)
     
     # For transient
     time_points: List[float] = field(default_factory=list)
@@ -240,129 +246,190 @@ class PythonThermalSolver:
                           convergence: float = 1e-6,
                           max_iterations: int = 10000,
                           progress_callback: Optional[Callable] = None) -> ThermalResult:
-        """Solve steady-state thermal problem."""
-        
+        """Solve steady-state thermal problem.
+
+        Numerical model (per node i):
+            sum_j G_ij (T_i - T_j) + q_rad_i(T) + q_bc_i(T) = Q_i
+
+        - Conduction is assembled into a sparse Laplacian-like matrix (SPD when anchored).
+        - Radiation is *linearized* into an equivalent conductance h_rad(Tm):
+              q_rad ≈ h_rad * (T - T_wall)
+          where h_rad = 4 * eps * sigma * A * Tm^3, evaluated using a mean temperature.
+        - Robin BC (mounting to box) is added as:
+              q_bc = bc_g * (T - bc_temp)
+
+        Fixed-temperature nodes are eliminated from the free-node system so we keep a
+        symmetric positive definite (SPD) matrix for CG stability.
+        """
+
         start_time = time.time()
         result = ThermalResult()
-        
+
         n = len(mesh.nodes)
         if n == 0:
             result.error_message = "Empty mesh"
             result.converged = False
             return result
-        
         if not HAS_NUMPY:
             result.error_message = "NumPy required for solver"
             result.converged = False
             return result
-        
-        # Initialize temperatures
-        T = np.full(n, ambient_temp_c, dtype=np.float64)
-        
-        # Build conductance matrix
-        if progress_callback:
-            progress_callback(10, "Building conductance matrix...")
-        
-        # Use sparse matrix for efficiency
-        row_idx = []
-        col_idx = []
-        data = []
-        Q = np.zeros(n)
-        
+
+        # Initial guess
+        T = np.full(n, float(ambient_temp_c), dtype=np.float64)
         for i, node in enumerate(mesh.nodes):
-            if node.is_fixed_temp:
-                # Fixed temperature node
-                row_idx.append(i)
-                col_idx.append(i)
-                data.append(1.0)
-                Q[i] = node.fixed_temp
-            else:
-                # Heat source
-                Q[i] = node.heat_source
-                
-                # Self conductance (sum of neighbor conductances)
-                diag = 0.0
-                for j, G in node.neighbors.items():
-                    row_idx.append(i)
-                    col_idx.append(j)
-                    data.append(-G)
-                    diag += G
-                
-                row_idx.append(i)
-                col_idx.append(i)
-                data.append(diag)
-        
-        if HAS_SCIPY:
-            K = sparse.csr_matrix((data, (row_idx, col_idx)), shape=(n, n))
-        else:
-            K = np.zeros((n, n))
-            for i, (r, c, v) in enumerate(zip(row_idx, col_idx, data)):
-                K[r, c] = v
-        
-        # Iterative solution (for radiation nonlinearity)
-        T_wall_K = chamber_wall_temp_c + self.kelvin_offset
-        
+            if getattr(node, 'is_fixed_temp', False):
+                T[i] = float(getattr(node, 'fixed_temp', ambient_temp_c))
+
+        fixed = np.array([bool(getattr(nd, 'is_fixed_temp', False)) for nd in mesh.nodes], dtype=bool)
+        free_ids = np.where(~fixed)[0]
+
+        # Detect if system is anchored (otherwise conduction-only is singular)
+        has_dirichlet = bool(np.any(fixed))
+        has_robin = any((float(getattr(nd, 'bc_g', 0.0) or 0.0) > 0.0) for nd in mesh.nodes)
+        has_rad = False
+        if include_radiation:
+            for nd in mesh.nodes:
+                if (not getattr(nd, 'is_fixed_temp', False)) and (float(getattr(nd, 'surface_area', 0.0) or 0.0) > 0.0) and (float(getattr(nd, 'emissivity', 0.0) or 0.0) > 0.0):
+                    has_rad = True
+                    break
+
+        if not (has_dirichlet or has_robin or has_rad):
+            result.error_message = "Unanchored thermal system (no fixed temp, no Robin BC, no radiation sink)."
+            result.converged = False
+            return result
+
+        if len(free_ids) == 0:
+            # All nodes fixed
+            result.temperatures = T.tolist()
+            result.min_temp = float(np.min(T))
+            result.max_temp = float(np.max(T))
+            result.avg_temp = float(np.mean(T))
+            result.iterations = 0
+            result.compute_time = time.time() - start_time
+            result.converged = True
+            return result
+
+        # Map global index -> free index
+        map_free = -np.ones(n, dtype=np.int64)
+        map_free[free_ids] = np.arange(len(free_ids), dtype=np.int64)
+
+        Twall_C = float(chamber_wall_temp_c)
+        Twall_K = Twall_C + self.kelvin_offset
+
+        # Iteration on radiation linearization (and optional damping)
+        damp = 0.7
+
         for iteration in range(max_iterations):
-            if progress_callback and iteration % 100 == 0:
-                progress_callback(10 + int(80 * iteration / max_iterations),
-                                f"Iteration {iteration}...")
-            
+            if progress_callback and iteration % 50 == 0:
+                progress_callback(10 + int(80 * iteration / max_iterations), f"Iteration {iteration}...")
+
             T_old = T.copy()
-            
-            # Add radiation heat transfer
-            Q_total = Q.copy()
-            
-            if include_radiation:
-                for i, node in enumerate(mesh.nodes):
-                    if not node.is_fixed_temp and node.surface_area > 0:
-                        T_K = T[i] + self.kelvin_offset
-                        q_rad = node.emissivity * self.stefan_boltzmann * node.surface_area * (
-                            T_K**4 - T_wall_K**4
-                        )
-                        Q_total[i] -= q_rad
-            
-            # Solve linear system
+
+            rows = []
+            cols = []
+            data = []
+            b = np.zeros(len(free_ids), dtype=np.float64)
+
+            for gi in free_ids:
+                li = int(map_free[gi])
+                node = mesh.nodes[gi]
+
+                rhs = float(getattr(node, 'heat_source', 0.0) or 0.0)
+                diag = 0.0
+
+                # Conduction neighbors
+                for gj, G in (getattr(node, 'neighbors', {}) or {}).items():
+                    if gj < 0 or gj >= n:
+                        continue
+                    G = float(G)
+                    if G <= 0:
+                        continue
+                    if fixed[gj]:
+                        rhs += G * float(getattr(mesh.nodes[gj], 'fixed_temp', Twall_C))
+                        diag += G
+                    else:
+                        lj = int(map_free[gj])
+                        rows.append(li)
+                        cols.append(lj)
+                        data.append(-G)
+                        diag += G
+
+                # Robin BC (mounting / box)
+                g_bc = float(getattr(node, 'bc_g', 0.0) or 0.0)
+                if g_bc > 0:
+                    diag += g_bc
+                    rhs += g_bc * float(getattr(node, 'bc_temp', Twall_C))
+
+                # Radiation linearization as equivalent conductance
+                if include_radiation:
+                    A = float(getattr(node, 'surface_area', 0.0) or 0.0)
+                    eps = float(getattr(node, 'emissivity', 0.0) or 0.0)
+                    if A > 0 and eps > 0:
+                        Tm_K = 0.5 * ((float(T_old[gi]) + self.kelvin_offset) + Twall_K)
+                        if Tm_K < 1.0:
+                            Tm_K = 1.0
+                        h = 4.0 * eps * self.stefan_boltzmann * A * (Tm_K ** 3)
+                        if h > 0:
+                            diag += h
+                            rhs += h * Twall_C
+
+                rows.append(li)
+                cols.append(li)
+                data.append(diag if diag > 0 else 1e-12)
+                b[li] = rhs
+
+            # Solve A x = b for free nodes
             if HAS_SCIPY:
-                # scipy.sparse.linalg.cg parameter varies by version
-                # Older versions use 'tol', newer use 'atol'/'rtol'
+                A_mat = sparse.csr_matrix((data, (rows, cols)), shape=(len(free_ids), len(free_ids)))
+                x0 = T_old[free_ids]
                 try:
-                    T, info = cg(K, Q_total, x0=T, atol=convergence, rtol=convergence)
+                    x, info = cg(A_mat, b, x0=x0, atol=convergence, rtol=convergence, maxiter=2000)
                 except TypeError:
-                    # Fallback for older scipy
                     try:
-                        T, info = cg(K, Q_total, x0=T, tol=convergence)
+                        x, info = cg(A_mat, b, x0=x0, tol=convergence, maxiter=2000)
                     except TypeError:
-                        T, info = cg(K, Q_total, x0=T)
-                
+                        x, info = cg(A_mat, b, x0=x0, maxiter=2000)
+
                 if info != 0:
-                    # Fallback to direct solver
                     try:
-                        T = spsolve(K, Q_total)
+                        x = spsolve(A_mat, b)
                     except Exception:
-                        pass
+                        result.warnings.append(f"Steady-state solver nonconvergence (info={info}).")
+                        # Keep last iterate
+                        x = x0
             else:
-                T = self._jacobi_solve(K, Q_total, T, convergence, 1000)
-            
-            # Check convergence
-            if np.max(np.abs(T - T_old)) < convergence:
+                # Dense fallback
+                A_dense = np.zeros((len(free_ids), len(free_ids)), dtype=np.float64)
+                for r, c, v in zip(rows, cols, data):
+                    A_dense[r, c] += v
+                x = self._jacobi_solve(A_dense, b, T_old[free_ids], convergence, 2000)
+
+            # Update temperatures
+            T[free_ids] = damp * x + (1.0 - damp) * T_old[free_ids]
+            for i, nd in enumerate(mesh.nodes):
+                if fixed[i]:
+                    T[i] = float(getattr(nd, 'fixed_temp', ambient_temp_c))
+
+            err = float(np.max(np.abs(T - T_old)))
+            if err < convergence:
                 result.converged = True
                 result.iterations = iteration + 1
                 break
         else:
             result.converged = False
             result.iterations = max_iterations
-        
+
         if progress_callback:
             progress_callback(95, "Finalizing...")
-        
+
         result.temperatures = T.tolist()
         result.min_temp = float(np.min(T))
         result.max_temp = float(np.max(T))
         result.avg_temp = float(np.mean(T))
         result.compute_time = time.time() - start_time
-        
         return result
-    
+
     def solve_transient(self, mesh: ThermalMesh,
                        duration_s: float,
                        timestep_s: float,
@@ -372,140 +439,165 @@ class PythonThermalSolver:
                        include_radiation: bool = True,
                        output_interval_s: float = 1.0,
                        progress_callback: Optional[Callable] = None) -> ThermalResult:
-        """Solve transient thermal problem using Crank-Nicolson."""
-        
+        """Solve transient thermal problem.
+
+        Robust implicit Euler with linearized radiation and Robin BCs.
+        This is slower than the native engine but stable in TVAC-style cases.
+        """
+
         start_time = time.time()
         result = ThermalResult()
-        
+
         n = len(mesh.nodes)
         if n == 0:
             result.error_message = "Empty mesh"
+            result.converged = False
             return result
-        
         if not HAS_NUMPY:
             result.error_message = "NumPy required"
+            result.converged = False
             return result
-        
-        # Initialize
-        T = np.full(n, initial_temp_c, dtype=np.float64)
-        
-        # Build mass and conductance matrices
-        if progress_callback:
-            progress_callback(5, "Building matrices...")
-        
-        # Thermal mass: C = rho * cp * V
-        C = np.array([node.rho * node.cp * node.volume for node in mesh.nodes])
-        C = np.maximum(C, 1e-12)  # Avoid division by zero
-        
-        # Conductance matrix (same as steady state)
-        row_idx = []
-        col_idx = []
-        data = []
-        Q = np.zeros(n)
-        
-        for i, node in enumerate(mesh.nodes):
-            Q[i] = node.heat_source
-            diag = 0.0
-            for j, G in node.neighbors.items():
-                row_idx.append(i)
-                col_idx.append(j)
-                data.append(-G)
-                diag += G
-            row_idx.append(i)
-            col_idx.append(i)
-            data.append(diag)
-        
-        if HAS_SCIPY:
-            K = sparse.csr_matrix((data, (row_idx, col_idx)), shape=(n, n))
-            M = sparse.diags(C)
-        else:
-            K = np.zeros((n, n))
-            for r, c, v in zip(row_idx, col_idx, data):
-                K[r, c] = v
-            M = np.diag(C)
-        
-        # Crank-Nicolson: (M/dt + 0.5*K) * T_new = (M/dt - 0.5*K) * T_old + Q
-        theta = 0.5
-        dt = timestep_s
-        
-        if HAS_SCIPY:
-            LHS = M / dt + theta * K
-        else:
-            LHS = M / dt + theta * K
-        
-        # Time stepping
-        T_wall_K = chamber_wall_temp_c + self.kelvin_offset
-        t = 0.0
-        num_steps = int(duration_s / timestep_s)
-        output_step = max(1, int(output_interval_s / timestep_s))
-        
+
+        dt = float(timestep_s)
+        if dt <= 0:
+            result.error_message = "Invalid timestep"
+            result.converged = False
+            return result
+
+        # Initial temps
+        T = np.full(n, float(initial_temp_c), dtype=np.float64)
+        fixed = np.array([bool(getattr(nd, 'is_fixed_temp', False)) for nd in mesh.nodes], dtype=bool)
+        for i, nd in enumerate(mesh.nodes):
+            if fixed[i]:
+                T[i] = float(getattr(nd, 'fixed_temp', initial_temp_c))
+
+        free_ids = np.where(~fixed)[0]
+        map_free = -np.ones(n, dtype=np.int64)
+        map_free[free_ids] = np.arange(len(free_ids), dtype=np.int64)
+
+        # Thermal mass
+        C = np.array([float(getattr(nd, 'rho', 0.0)) * float(getattr(nd, 'cp', 0.0)) * float(getattr(nd, 'volume', 0.0)) for nd in mesh.nodes], dtype=np.float64)
+        C = np.maximum(C, 1e-12)
+
+        Twall_C = float(chamber_wall_temp_c)
+        Twall_K = Twall_C + self.kelvin_offset
+
+        num_steps = int(max(0, round(float(duration_s) / dt)))
+        output_step = max(1, int(round(float(output_interval_s) / dt)))
+
         result.time_points = [0.0]
         result.temp_history = [T.tolist()]
-        
+
+        t = 0.0
         for step in range(num_steps):
             if progress_callback and step % 10 == 0:
-                progress_callback(5 + int(90 * step / num_steps),
-                                f"Time: {t:.1f}s / {duration_s:.1f}s")
-            
-            # Radiation term
-            Q_rad = np.zeros(n)
-            if include_radiation:
-                for i, node in enumerate(mesh.nodes):
-                    if node.surface_area > 0:
-                        T_K = T[i] + self.kelvin_offset
-                        Q_rad[i] = -node.emissivity * self.stefan_boltzmann * node.surface_area * (
-                            T_K**4 - T_wall_K**4
-                        )
-            
-            # RHS
-            if HAS_SCIPY:
-                RHS = (M / dt - (1 - theta) * K) @ T + Q + Q_rad
-            else:
-                RHS = (M / dt - (1 - theta) * K) @ T + Q + Q_rad
-            
-            # Apply fixed temperature BCs
-            for i, node in enumerate(mesh.nodes):
-                if node.is_fixed_temp:
-                    RHS[i] = node.fixed_temp
-                    if HAS_SCIPY:
-                        # Modify LHS for fixed nodes (already done if sparse)
-                        pass
-            
+                progress_callback(5 + int(90 * step / max(1, num_steps)), f"Time: {t:.1f}s / {duration_s:.1f}s")
+
+            T_old = T.copy()
+
+            if len(free_ids) == 0:
+                # Fully fixed
+                t += dt
+                if step % output_step == 0:
+                    result.time_points.append(t)
+                    result.temp_history.append(T.tolist())
+                continue
+
+            rows = []
+            cols = []
+            data = []
+            b = np.zeros(len(free_ids), dtype=np.float64)
+
+            for gi in free_ids:
+                li = int(map_free[gi])
+                node = mesh.nodes[gi]
+
+                rhs = float(getattr(node, 'heat_source', 0.0) or 0.0)
+                rhs += (C[gi] / dt) * float(T_old[gi])
+
+                diag = (C[gi] / dt)
+
+                # Conduction
+                for gj, G in (getattr(node, 'neighbors', {}) or {}).items():
+                    if gj < 0 or gj >= n:
+                        continue
+                    G = float(G)
+                    if G <= 0:
+                        continue
+                    if fixed[gj]:
+                        rhs += G * float(getattr(mesh.nodes[gj], 'fixed_temp', Twall_C))
+                        diag += G
+                    else:
+                        lj = int(map_free[gj])
+                        rows.append(li)
+                        cols.append(lj)
+                        data.append(-G)
+                        diag += G
+
+                # Robin BC
+                g_bc = float(getattr(node, 'bc_g', 0.0) or 0.0)
+                if g_bc > 0:
+                    diag += g_bc
+                    rhs += g_bc * float(getattr(node, 'bc_temp', Twall_C))
+
+                # Radiation linearized
+                if include_radiation:
+                    A = float(getattr(node, 'surface_area', 0.0) or 0.0)
+                    eps = float(getattr(node, 'emissivity', 0.0) or 0.0)
+                    if A > 0 and eps > 0:
+                        Tm_K = 0.5 * ((float(T_old[gi]) + self.kelvin_offset) + Twall_K)
+                        if Tm_K < 1.0:
+                            Tm_K = 1.0
+                        h = 4.0 * eps * self.stefan_boltzmann * A * (Tm_K ** 3)
+                        if h > 0:
+                            diag += h
+                            rhs += h * Twall_C
+
+                rows.append(li)
+                cols.append(li)
+                data.append(diag if diag > 0 else 1e-12)
+                b[li] = rhs
+
             # Solve
             if HAS_SCIPY:
+                A_mat = sparse.csr_matrix((data, (rows, cols)), shape=(len(free_ids), len(free_ids)))
+                x0 = T_old[free_ids]
                 try:
-                    T_new, info = cg(LHS, RHS, x0=T, atol=1e-8, rtol=1e-8)
+                    x, info = cg(A_mat, b, x0=x0, atol=1e-8, rtol=1e-8, maxiter=4000)
                 except TypeError:
                     try:
-                        T_new, info = cg(LHS, RHS, x0=T, tol=1e-8)
+                        x, info = cg(A_mat, b, x0=x0, tol=1e-8, maxiter=4000)
                     except TypeError:
-                        T_new, info = cg(LHS, RHS, x0=T)
-                
+                        x, info = cg(A_mat, b, x0=x0, maxiter=4000)
                 if info != 0:
-                    T_new = spsolve(LHS.tocsr(), RHS)
+                    x = spsolve(A_mat, b)
             else:
-                T_new = self._jacobi_solve(LHS, RHS, T, 1e-8, 500)
-            
-            T = T_new
+                A_dense = np.zeros((len(free_ids), len(free_ids)), dtype=np.float64)
+                for r, c, v in zip(rows, cols, data):
+                    A_dense[r, c] += v
+                x = self._jacobi_solve(A_dense, b, T_old[free_ids], 1e-8, 2000)
+
+            T[free_ids] = x
+            for i, nd in enumerate(mesh.nodes):
+                if fixed[i]:
+                    T[i] = float(getattr(nd, 'fixed_temp', initial_temp_c))
+
             t += dt
-            
-            # Store output
             if step % output_step == 0:
                 result.time_points.append(t)
                 result.temp_history.append(T.tolist())
-        
+
         if progress_callback:
             progress_callback(98, "Finalizing...")
-        
+
         result.temperatures = T.tolist()
         result.min_temp = float(np.min(T))
         result.max_temp = float(np.max(T))
         result.avg_temp = float(np.mean(T))
         result.compute_time = time.time() - start_time
         result.converged = True
-        
         return result
-    
+
     def _jacobi_solve(self, A, b, x0, tol, max_iter):
         """Simple Jacobi iterative solver (fallback)."""
         n = len(b)

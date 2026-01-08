@@ -168,6 +168,7 @@ class SimulationConfig:
     copper_tempco_per_c: float = 0.00393  # Copper temperature coefficient (1/°C)
     via_plating_thickness_um: float = 25.0  # Via barrel copper plating thickness
     plane_grid_mm: float = 2.0  # Resistive-plane discretization grid size
+    plane_contact_resistance_ohm: float = 1e-6  # Stitch/contact resistance to plane nodes
 
     # --- Validation / debug outputs ---
     validation_mode: bool = False

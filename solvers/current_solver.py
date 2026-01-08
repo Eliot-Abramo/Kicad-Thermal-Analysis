@@ -138,7 +138,10 @@ class CurrentDistributionSolver:
                      include_ac_effects: bool = False,
                      frequency_hz: float = 0.0,
                      via_plating_thickness_m: float = 25e-6,
-                     net_code_filter: Optional[int] = None):
+                     net_code_filter: Optional[int] = None,
+                     include_pours: bool = True,
+                     plane_grid_mm: float = 2.0,
+                     plane_contact_resistance_ohm: float = 1e-6):
         """
         Build electrical network from PCB geometry.
         
@@ -225,6 +228,18 @@ class CurrentDistributionSolver:
         
         # Add vias as connections between layers
         self._add_via_connections(copper_thickness, copper, via_plating_thickness_m, net_code_filter)
+
+        # Add copper pours (planes) as a 2D sheet-resistance grid.
+        # This is critical to capture return current paths and current spreading.
+        # Added *after* vias so we can also stitch plane nodes to via endpoints.
+        if include_pours:
+            self._add_pour_sheet_grids(
+                copper_thickness=copper_thickness,
+                resistivity_ohm_m=copper.electrical_resistivity,
+                grid_mm=float(plane_grid_mm),
+                contact_resistance_ohm=float(plane_contact_resistance_ohm),
+                net_code_filter=net_code_filter,
+            )
         
         self.logger.info(f"Network built: {len(self.nodes)} nodes, {len(self.segments)} segments")
     
@@ -251,6 +266,199 @@ class CurrentDistributionSolver:
         self._node_counter += 1
         
         return node.node_id
+
+    def _add_pour_sheet_grids(self,
+                              copper_thickness: Dict[str, float],
+                              resistivity_ohm_m: float,
+                              grid_mm: float = 2.0,
+                              contact_resistance_ohm: float = 1e-6,
+                              net_code_filter: Optional[int] = None):
+        """Add copper pours as 2D sheet-resistance grids.
+
+        This is an *approximation* of current spreading in copper planes:
+        - Each pour polygon is discretized into a regular grid of nodes.
+        - Adjacent grid nodes are connected with resistors derived from sheet resistance.
+        - Existing routed nodes (trace endpoints / via endpoints) that lie inside the pour
+          are stitched to the nearest grid node with a small contact resistance.
+
+        Limitations:
+        - This uses the pour outline polygon only; it does *not* model voids/thermal-reliefs
+          created by the KiCad fill algorithm around pads/other nets.
+        - For very large pours with very fine grid_mm, this can create a lot of nodes.
+        """
+        pours = getattr(self.pcb_data, 'copper_pours', None) or []
+        if not pours:
+            return
+
+        step_mm = float(grid_mm) if grid_mm and grid_mm > 0 else 2.0
+        # Safety clamp: prevent accidental millions of nodes
+        step_mm = max(0.75, min(step_mm, 10.0))
+        step_m = step_mm / 1000.0
+
+        # Base nodes present before adding plane nodes (trace/via nodes)
+        base_node_ids = list(self.nodes.keys())
+
+        for pour in pours:
+            try:
+                layer = str(getattr(pour, 'layer', '') or '')
+                net_code = int(getattr(pour, 'net_code', 0) or 0)
+                net_name = str(getattr(pour, 'net_name', '') or getattr(pour, 'net', '') or '')
+                outline = getattr(pour, 'outline', None) or []
+            except Exception:
+                continue
+
+            if net_code_filter is not None and net_code != int(net_code_filter):
+                continue
+            if not layer or len(outline) < 3:
+                continue
+
+            thickness_m = float(copper_thickness.get(layer, 35e-6) or 35e-6)
+            thickness_m = max(thickness_m, 1e-9)
+
+            # Sheet resistance per square (ohms/sq)
+            r_per_edge = float(resistivity_ohm_m) / thickness_m
+            if r_per_edge <= 0:
+                continue
+
+            xs = [p.x for p in outline]
+            ys = [p.y for p in outline]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+
+            nx = int(math.floor((max_x - min_x) / step_mm)) + 1
+            ny = int(math.floor((max_y - min_y) / step_mm)) + 1
+            if nx <= 0 or ny <= 0:
+                continue
+
+            # Cap grid size to avoid runaway memory
+            if nx * ny > 250_000:
+                self.logger.warning(
+                    f"Pour grid too dense ({nx}x{ny}={nx*ny}); increase plane_grid_mm. Skipping pour {getattr(pour,'zone_id','')}."
+                )
+                continue
+
+            # Build nodes inside polygon
+            grid: Dict[Tuple[int, int], int] = {}
+            poly = [(float(p.x), float(p.y)) for p in outline]
+
+            for ix in range(nx):
+                x = min_x + ix * step_mm
+                for iy in range(ny):
+                    y = min_y + iy * step_mm
+                    if not self._point_in_polygon(x, y, poly):
+                        continue
+                    node_id = self._get_or_create_node(Point2D(x, y), layer, net_code, net_name)
+                    grid[(ix, iy)] = node_id
+
+            if not grid:
+                continue
+
+            # Connect neighbors (4-neighborhood)
+            for (ix, iy), n0 in grid.items():
+                for dx, dy in ((1, 0), (0, 1)):
+                    key = (ix + dx, iy + dy)
+                    n1 = grid.get(key)
+                    if n1 is None or n1 == n0:
+                        continue
+                    self._segment_counter += 1
+                    seg_id = f"PLN_{self._segment_counter}"
+                    segment = ElectricalSegment(
+                        segment_id=seg_id,
+                        node1_id=n0,
+                        node2_id=n1,
+                        resistance_ohm=r_per_edge,
+                        length_m=step_m,
+                        width_m=step_m,
+                        thickness_m=thickness_m,
+                        layer=layer,
+                        trace_ref=None,
+                    )
+                    self.segments[seg_id] = segment
+                    self.nodes[n0].connected_segments.append(seg_id)
+                    self.nodes[n1].connected_segments.append(seg_id)
+
+            # Stitch base routed nodes into the plane grid (low contact resistance)
+            stitch_r = max(step_mm * 1.5, 1.0)
+            stitch_r2 = stitch_r * stitch_r
+
+            for node_id in base_node_ids:
+                node = self.nodes.get(node_id)
+                if not node:
+                    continue
+                if node.layer != layer or int(getattr(node, 'net_code', 0) or 0) != net_code:
+                    continue
+                x = float(node.position.x)
+                y = float(node.position.y)
+                if x < min_x - step_mm or x > max_x + step_mm or y < min_y - step_mm or y > max_y + step_mm:
+                    continue
+                if not self._point_in_polygon(x, y, poly):
+                    continue
+
+                # Find nearest grid node by cell lookup
+                ix0 = int(round((x - min_x) / step_mm))
+                iy0 = int(round((y - min_y) / step_mm))
+
+                best = None
+                best_d2 = 1e99
+                for dix in (-1, 0, 1):
+                    for diy in (-1, 0, 1):
+                        nid = grid.get((ix0 + dix, iy0 + diy))
+                        if nid is None or nid == node_id:
+                            continue
+                        pn = self.nodes.get(nid)
+                        if not pn:
+                            continue
+                        dx = float(pn.position.x) - x
+                        dy = float(pn.position.y) - y
+                        d2 = dx * dx + dy * dy
+                        if d2 < best_d2:
+                            best_d2 = d2
+                            best = nid
+
+                if best is None or best_d2 > stitch_r2:
+                    continue
+
+                self._segment_counter += 1
+                seg_id = f"STC_{self._segment_counter}"
+                segment = ElectricalSegment(
+                    segment_id=seg_id,
+                    node1_id=node_id,
+                    node2_id=best,
+                    resistance_ohm=max(float(contact_resistance_ohm), 1e-12),
+                    length_m=math.sqrt(best_d2) / 1000.0,
+                    width_m=step_m,
+                    thickness_m=thickness_m,
+                    layer=layer,
+                    trace_ref=None,
+                )
+                self.segments[seg_id] = segment
+                self.nodes[node_id].connected_segments.append(seg_id)
+                self.nodes[best].connected_segments.append(seg_id)
+
+    @staticmethod
+    def _point_in_polygon(x: float, y: float, poly: List[Tuple[float, float]]) -> bool:
+        """Ray-casting point-in-polygon test."""
+        inside = False
+        n = len(poly)
+        if n < 3:
+            return False
+
+        x0, y0 = poly[0]
+        for i in range(1, n + 1):
+            x1, y1 = poly[i % n]
+            # Check if edge crosses the ray to the right
+            if ((y0 > y) != (y1 > y)):
+                # Compute intersection X coordinate
+                denom = (y1 - y0)
+                if abs(denom) < 1e-18:
+                    x_int = x0
+                else:
+                    x_int = (x1 - x0) * (y - y0) / denom + x0
+                if x < x_int:
+                    inside = not inside
+            x0, y0 = x1, y1
+
+        return inside
     
     def _add_via_connections(self, copper_thickness: Dict[str, float], copper_material,
                              via_plating_thickness_m: float = 25e-6,
