@@ -12,6 +12,7 @@ Version: 2.0.0
 
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
+import math
 
 try:
     import pcbnew
@@ -100,7 +101,6 @@ class TraceSegment:
         if self.length_mm <= 0 and (self.start or self.end):
             dx = (self.end.x - self.start.x)
             dy = (self.end.y - self.start.y)
-            import math
             self.length_mm = math.sqrt(dx*dx + dy*dy)
 
 

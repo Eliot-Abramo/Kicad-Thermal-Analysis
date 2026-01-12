@@ -138,11 +138,7 @@ class CurrentDistributionSolver:
                      include_ac_effects: bool = False,
                      frequency_hz: float = 0.0,
                      via_plating_thickness_m: float = 25e-6,
-                     net_code_filter: Optional[int] = None,
-                     include_pours: bool = True,
-                     plane_grid_mm: float = 2.0,
-                     plane_contact_resistance_ohm: float = 1e-6,
-                     copper_resistivity_ohm_m: Optional[float] = None):
+                     net_code_filter: Optional[int] = None):
         """
         Build electrical network from PCB geometry.
         
@@ -176,7 +172,7 @@ class CurrentDistributionSolver:
             thickness = copper_thickness.get(layer, 35e-6)  # Default 1oz
             
             # Calculate resistivity (with temperature coefficient if needed)
-            resistivity = float(copper_resistivity_ohm_m) if copper_resistivity_ohm_m is not None else copper.electrical_resistivity
+            resistivity = copper.electrical_resistivity
             
             # Include skin effect if requested
             if include_ac_effects and frequency_hz > 0:
@@ -228,19 +224,7 @@ class CurrentDistributionSolver:
             nets_processed.add(net_code)
         
         # Add vias as connections between layers
-        self._add_via_connections(copper_thickness, resistivity, via_plating_thickness_m, net_code_filter)
-
-        # Add copper pours (planes) as a 2D sheet-resistance grid.
-        # This is critical to capture return current paths and current spreading.
-        # Added *after* vias so we can also stitch plane nodes to via endpoints.
-        if include_pours:
-            self._add_pour_sheet_grids(
-                copper_thickness=copper_thickness,
-                resistivity_ohm_m=resistivity,
-                grid_mm=float(plane_grid_mm),
-                contact_resistance_ohm=float(plane_contact_resistance_ohm),
-                net_code_filter=net_code_filter,
-            )
+        self._add_via_connections(copper_thickness, copper, via_plating_thickness_m, net_code_filter)
         
         self.logger.info(f"Network built: {len(self.nodes)} nodes, {len(self.segments)} segments")
     
@@ -267,275 +251,8 @@ class CurrentDistributionSolver:
         self._node_counter += 1
         
         return node.node_id
-
-        def _add_pour_sheet_grids(self,
-                                  copper_thickness: dict,
-                                  resistivity_ohm_m: float,
-                                  grid_mm: float = 2.0,
-                                  contact_resistance_ohm: float = 1e-6,
-                                  net_code_filter: int | None = None):
-            """Add copper pours as 2D sheet-resistance grids.
     
-            Priority A (industrial): handle *multiple pours* and *multiple polygons* per net/layer.
-    
-            Implementation notes:
-            - Pours are grouped by (layer, net_code) then meshed as a union-of-polygons on that layer.
-            - This avoids double-adding identical plane edges when KiCad produces multiple zone objects
-              on the same net/layer (e.g. split islands, priority overlaps).
-            - We still approximate the KiCad fill details (voids/thermals/keepouts) unless the extractor
-              provides the filled polygon set.
-    
-            Limitations:
-            - The polygon membership test uses a simple ray-cast; for very complex outlines and very
-              fine grids, this can be slow.
-            - Voids / thermal relief geometry is not modeled unless provided by pcb_extractor.
-            """
-            pours = getattr(self.pcb_data, 'copper_pours', None) or []
-            if not pours:
-                return
-    
-            step_mm = float(grid_mm) if grid_mm and grid_mm > 0 else 2.0
-            # Safety clamp: prevent accidental millions of nodes
-            step_mm = max(0.75, min(step_mm, 10.0))
-            step_m = step_mm / 1000.0
-    
-            thickness_default = 35e-6
-            rho = float(resistivity_ohm_m)
-            if rho <= 0:
-                return
-    
-            # Base nodes present before adding plane nodes (trace/via nodes)
-            base_node_ids = list(self.nodes.keys())
-    
-            # --- Group pours by (layer, net_code) and merge polygons ---
-            groups: dict[tuple[str, int], dict] = {}
-    
-            for pour in pours:
-                try:
-                    layer = str(getattr(pour, 'layer', '') or '')
-                    net_code = int(getattr(pour, 'net_code', 0) or 0)
-                    net_name = str(getattr(pour, 'net_name', '') or getattr(pour, 'net', '') or '')
-                except Exception:
-                    continue
-    
-                if net_code_filter is not None and net_code != int(net_code_filter):
-                    continue
-                if not layer or net_code == 0:
-                    # KiCad uses 0 for "no net"; ignore for current distribution
-                    continue
-    
-                # Support multiple outlines if the extractor provides them
-                outlines = None
-                for attr in ('outlines', 'polygons', 'filled_polygons'):
-                    v = getattr(pour, attr, None)
-                    if isinstance(v, list) and v:
-                        outlines = v
-                        break
-                if outlines is None:
-                    outlines = getattr(pour, 'outline', None) or []
-    
-                # Normalize to List[List[Point2D]]
-                if outlines and hasattr(outlines[0], 'x'):
-                    outlines = [outlines]
-                if not isinstance(outlines, list):
-                    continue
-    
-                polys = []
-                for ol in outlines:
-                    try:
-                        if not ol or len(ol) < 3:
-                            continue
-                        poly = [(float(p.x), float(p.y)) for p in ol]
-                        polys.append(poly)
-                    except Exception:
-                        continue
-    
-                if not polys:
-                    continue
-    
-                key = (layer, net_code)
-                g = groups.setdefault(key, {'net_name': net_name, 'polys': [], 'zone_ids': []})
-                if not g.get('net_name') and net_name:
-                    g['net_name'] = net_name
-                g['polys'].extend(polys)
-                zid = getattr(pour, 'zone_id', '')
-                if zid:
-                    g['zone_ids'].append(str(zid))
-    
-            if not groups:
-                return
-    
-            # --- Build one grid per (layer, net_code) ---
-            for (layer, net_code), g in groups.items():
-                polys = g.get('polys', []) or []
-                if not polys:
-                    continue
-    
-                thickness_m = float(copper_thickness.get(layer, thickness_default) or thickness_default)
-                thickness_m = max(thickness_m, 1e-9)
-    
-                # Sheet resistance per square (ohms/sq). For a regular grid with dx==dy,
-                # each neighbor edge uses approximately Rsq.
-                r_per_edge = rho / thickness_m
-                if r_per_edge <= 0:
-                    continue
-    
-                min_x = min(min(x for x, _ in poly) for poly in polys)
-                max_x = max(max(x for x, _ in poly) for poly in polys)
-                min_y = min(min(y for _, y in poly) for poly in polys)
-                max_y = max(max(y for _, y in poly) for poly in polys)
-    
-                nx = int((max_x - min_x) // step_mm) + 1
-                ny = int((max_y - min_y) // step_mm) + 1
-                if nx <= 0 or ny <= 0:
-                    continue
-    
-                if nx * ny > 250_000:
-                    self.logger.warning(
-                        f"Plane grid too dense ({nx}x{ny}={nx*ny}) on {layer} net={net_code}; increase plane_grid_mm. Skipping."
-                    )
-                    continue
-    
-                grid: dict[tuple[int, int], int] = {}
-    
-                def inside_union(x: float, y: float) -> bool:
-                    for poly in polys:
-                        if self._point_in_polygon(x, y, poly):
-                            return True
-                    return False
-    
-                # Build nodes inside union
-                for ix in range(nx):
-                    x = min_x + ix * step_mm
-                    for iy in range(ny):
-                        y = min_y + iy * step_mm
-                        if not inside_union(x, y):
-                            continue
-                        node_id = self._get_or_create_node(Point2D(x, y), layer, net_code, g.get('net_name', ''))
-                        grid[(ix, iy)] = node_id
-    
-                if not grid:
-                    continue
-    
-                # Connect neighbors (4-neighborhood) with dedup
-                edge_added: set[tuple[int, int]] = set()
-                for (ix, iy), n0 in grid.items():
-                    for dx, dy in ((1, 0), (0, 1)):
-                        n1 = grid.get((ix + dx, iy + dy))
-                        if n1 is None or n1 == n0:
-                            continue
-                        a, b = (n0, n1) if n0 < n1 else (n1, n0)
-                        if (a, b) in edge_added:
-                            continue
-                        edge_added.add((a, b))
-    
-                        self._segment_counter += 1
-                        seg_id = f"PLN_{self._segment_counter}"
-                        segment = ElectricalSegment(
-                            segment_id=seg_id,
-                            node1_id=a,
-                            node2_id=b,
-                            resistance_ohm=r_per_edge,
-                            length_m=step_m,
-                            width_m=step_m,
-                            thickness_m=thickness_m,
-                            layer=layer,
-                            trace_ref=None,
-                        )
-                        self.segments[seg_id] = segment
-                        self.nodes[a].connected_segments.append(seg_id)
-                        self.nodes[b].connected_segments.append(seg_id)
-    
-                # Stitch base routed nodes into the plane grid (low contact resistance)
-                stitch_r = max(step_mm * 1.5, 1.0)
-                stitch_r2 = stitch_r * stitch_r
-                stitch_added: set[tuple[int, int]] = set()
-    
-                for node_id in base_node_ids:
-                    node = self.nodes.get(node_id)
-                    if not node:
-                        continue
-                    if node.layer != layer or int(getattr(node, 'net_code', 0) or 0) != net_code:
-                        continue
-    
-                    x = float(node.position.x)
-                    y = float(node.position.y)
-                    if x < min_x - step_mm or x > max_x + step_mm or y < min_y - step_mm or y > max_y + step_mm:
-                        continue
-                    if not inside_union(x, y):
-                        continue
-    
-                    ix0 = int(round((x - min_x) / step_mm))
-                    iy0 = int(round((y - min_y) / step_mm))
-    
-                    best = None
-                    best_d2 = 1e99
-                    for dix in (-1, 0, 1):
-                        for diy in (-1, 0, 1):
-                            nid = grid.get((ix0 + dix, iy0 + diy))
-                            if nid is None or nid == node_id:
-                                continue
-                            pn = self.nodes.get(nid)
-                            if not pn:
-                                continue
-                            dx = float(pn.position.x) - x
-                            dy = float(pn.position.y) - y
-                            d2 = dx * dx + dy * dy
-                            if d2 < best_d2:
-                                best_d2 = d2
-                                best = nid
-    
-                    if best is None or best_d2 > stitch_r2:
-                        continue
-    
-                    a, b = (node_id, best) if node_id < best else (best, node_id)
-                    if (a, b) in stitch_added:
-                        continue
-                    stitch_added.add((a, b))
-    
-                    self._segment_counter += 1
-                    seg_id = f"STC_{self._segment_counter}"
-                    segment = ElectricalSegment(
-                        segment_id=seg_id,
-                        node1_id=a,
-                        node2_id=b,
-                        resistance_ohm=max(float(contact_resistance_ohm), 1e-12),
-                        length_m=(best_d2 ** 0.5) / 1000.0,
-                        width_m=step_m,
-                        thickness_m=thickness_m,
-                        layer=layer,
-                        trace_ref=None,
-                    )
-                    self.segments[seg_id] = segment
-                    self.nodes[a].connected_segments.append(seg_id)
-                    self.nodes[b].connected_segments.append(seg_id)
-    
-    @staticmethod
-    def _point_in_polygon(x: float, y: float, poly: List[Tuple[float, float]]) -> bool:
-        """Ray-casting point-in-polygon test."""
-        inside = False
-        n = len(poly)
-        if n < 3:
-            return False
-
-        x0, y0 = poly[0]
-        for i in range(1, n + 1):
-            x1, y1 = poly[i % n]
-            # Check if edge crosses the ray to the right
-            if ((y0 > y) != (y1 > y)):
-                # Compute intersection X coordinate
-                denom = (y1 - y0)
-                if abs(denom) < 1e-18:
-                    x_int = x0
-                else:
-                    x_int = (x1 - x0) * (y - y0) / denom + x0
-                if x < x_int:
-                    inside = not inside
-            x0, y0 = x1, y1
-
-        return inside
-    
-    def _add_via_connections(self, copper_thickness: Dict[str, float], copper_resistivity_ohm_m: float,
+    def _add_via_connections(self, copper_thickness: Dict[str, float], copper_material,
                              via_plating_thickness_m: float = 25e-6,
                              net_code_filter: Optional[int] = None):
         """Add electrical connections through vias."""
@@ -587,7 +304,7 @@ class CurrentDistributionSolver:
                 cross_section = math.pi * (outer_radius**2 - inner_radius**2)
                 
                 if cross_section > 0 and via_length > 0:
-                    via_resistance = float(copper_resistivity_ohm_m) * via_length / cross_section
+                    via_resistance = copper_material.electrical_resistivity * via_length / cross_section
                 else:
                     via_resistance = 1e-6
                 

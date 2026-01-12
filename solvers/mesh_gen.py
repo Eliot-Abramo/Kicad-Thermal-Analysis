@@ -492,18 +492,6 @@ class MeshGenerator:
 
         via_plating_m = float(getattr(self.config.simulation, "via_plating_thickness_um", 25.0)) * 1e-6
 
-        # Optional electro-thermal coupling: allow electrical resistivity to depend on the latest temperature estimate
-        rho0 = float(getattr(self.config.simulation, "copper_resistivity_ohm_m", 1.724e-8) or 1.724e-8)
-        alpha = float(getattr(self.config.simulation, "copper_tempco_per_c", 0.00393) or 0.00393)
-        temp_c = getattr(self.config.simulation, "_electrical_temp_c", None)
-        if temp_c is None:
-            temp_c = float(getattr(self.config.simulation, "ambient_temp_c", 25.0) or 25.0)
-        try:
-            temp_c = float(temp_c)
-        except Exception:
-            temp_c = float(getattr(self.config.simulation, "ambient_temp_c", 25.0) or 25.0)
-        copper_rho = rho0 * (1.0 + alpha * (temp_c - 20.0))
-
         # Pre-index nodes by layer_idx for faster lookup during deposition
         nodes_by_layer = {}
         for n in mesh.nodes:
@@ -590,10 +578,6 @@ class MeshGenerator:
                 include_ac_effects=bool(getattr(self.config.simulation, "include_ac_effects", False)),
                 frequency_hz=0.0,
                 via_plating_thickness_m=via_plating_m,
-                include_pours=True,
-                plane_grid_mm=float(getattr(self.config.simulation, "plane_grid_mm", 2.0) or 2.0),
-                plane_contact_resistance_ohm=float(getattr(self.config.simulation, "plane_contact_resistance_ohm", 1e-6) or 1e-6),
-                copper_resistivity_ohm_m=float(copper_rho),
                 net_code_filter=net_code if net_code != 0 else None,
             )
 
@@ -748,93 +732,32 @@ class MeshGenerator:
         node.neighbors[neighbor_idx] = G
     
     def _apply_boundary_conditions(self, mesh: ThermalMesh):
-        """Apply mounting boundary conditions.
+        """Apply boundary conditions from mounting points.
 
-        Industrial model:
-          - If mounting point has fixed_temp_c -> Dirichlet on B.Cu area
-          - Else if thermal_resistance > 0 -> Robin (conductance) to mounting_box_temp_c
-          - Else -> Dirichlet to mounting_box_temp_c
-
-        Notes:
-          - Applied on the *bottom copper side* (B.Cu) because that's where boards are usually mounted.
-          - Distributed across all nodes under the mounting footprint to avoid singular "single node" constraints.
+        Industrial default:
+          - If a mounting point has no explicit fixed temperature, we pin it to
+            SimulationConfig.mounting_box_temp_c (cold plate / enclosure) for a
+            first-order TVAC conduction path.
         """
-        if not getattr(self.config, 'mounting_points', None):
-            return
-
-        bottom_idx = max(0, mesh.nz - 1)
-        box_temp = float(getattr(getattr(self.config, 'simulation', None), 'mounting_box_temp_c', 25.0) or 25.0)
-
-        # Pre-filter bottom nodes for speed
-        bottom_nodes = [n for n in mesh.nodes if getattr(n, 'layer_idx', 0) == bottom_idx]
-        if not bottom_nodes:
-            return
-
         for mp in self.config.mounting_points:
-            try:
-                x0 = float(mp.x_mm)
-                y0 = float(mp.y_mm)
-                dia = float(getattr(mp, 'diameter_mm', 3.2) or 3.2)
-                r = 0.5 * max(0.5, dia)
-            except Exception:
-                continue
+            fixed = mp.fixed_temp_c
+            if fixed is None:
+                fixed = getattr(self.config.simulation, 'mounting_box_temp_c', None)
 
-            # Nodes under the footprint (mm)
-            r2 = r * r
-            footprint = [n for n in bottom_nodes if (n.x - x0) * (n.x - x0) + (n.y - y0) * (n.y - y0) <= r2]
-            if not footprint:
-                # Fallback: pick nearest bottom node
-                best = None
-                best_d2 = 1e99
-                for n in bottom_nodes:
-                    d2 = (n.x - x0) * (n.x - x0) + (n.y - y0) * (n.y - y0)
-                    if d2 < best_d2:
-                        best_d2 = d2
-                        best = n
-                footprint = [best] if best else []
-
-            if not footprint:
-                continue
-
-            # Decide Dirichlet vs Robin
-            fixed = getattr(mp, 'fixed_temp_c', None)
             if fixed is not None:
-                try:
-                    Tfix = float(fixed)
-                except Exception:
-                    continue
-                for n in footprint:
-                    n.is_fixed_temp = True
-                    n.fixed_temp = Tfix
-                continue
-
-            # Default to box temp
-            Tbc = box_temp
-
-            Rth = float(getattr(mp, 'thermal_resistance', 0.0) or 0.0)
-            if Rth > 0:
-                G_total = 1.0 / Rth  # W/K
-                per = G_total / max(1, len(footprint))
-                for n in footprint:
-                    # Don't overwrite explicit fixed temps
-                    if getattr(n, 'is_fixed_temp', False):
-                        continue
-                    n.bc_g = float(getattr(n, 'bc_g', 0.0) or 0.0) + per
-                    n.bc_temp = Tbc
-            else:
-                # No Rth provided -> treat as a perfect mount to box temperature
-                for n in footprint:
-                    n.is_fixed_temp = True
-                    n.fixed_temp = Tbc
-
+                # Find nearest node
+                nearest_node = self._find_nearest_node(mesh, mp.x_mm, mp.y_mm)
+                if nearest_node:
+                    nearest_node.is_fixed_temp = True
+                    nearest_node.fixed_temp = float(fixed)
+    
     def _find_nearest_node(self, mesh: ThermalMesh, x: float, y: float) -> Optional[ThermalNode]:
         """Find nearest node to given coordinates."""
         min_dist = float('inf')
         nearest = None
         
-        bottom_idx = max(0, mesh.nz - 1)
         for node in mesh.nodes:
-            if node.layer_idx == bottom_idx:  # Bottom layer (B.Cu)
+            if node.layer_idx == 0:  # Top layer
                 dist = math.sqrt((node.x - x)**2 + (node.y - y)**2)
                 if dist < min_dist:
                     min_dist = dist

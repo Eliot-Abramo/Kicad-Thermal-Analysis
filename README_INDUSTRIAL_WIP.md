@@ -3,9 +3,7 @@
 This ZIP is a **work-in-progress snapshot** of the ongoing refactor toward an industrial-grade, routing-aware electro‑thermal tool for KiCad 9.0+.
 
 It is meant to demonstrate active progress and to provide a **more stable** baseline than the original ZIP.
-Some key industrial features (terminal-based current injection UI) are still in progress, but this snapshot already includes:
-- **Python thermal fallback parity**: Robin BC + radiation linearization for TVAC stability
-- **Copper zone/plane modeling**: sheet-resistance grid for return paths/current spreading (pours merged per net/layer to avoid duplicate edges)
+Some key industrial features (terminal-based current injection UI, zone sheet-resistance modeling, radiation Newton linearization) are still in progress.
 
 ---
 
@@ -33,10 +31,9 @@ Some key industrial features (terminal-based current injection UI) are still in 
   - Solves for node voltages using sparse nodal analysis (SciPy).
   - Computes per-segment Joule losses (**I²R**) and **deposits them onto the thermal mesh** near each copper segment.
 
-**Now modeled (first-order electro-thermal coupling, optional):**
-- Temperature-dependent copper resistivity using a **global/average temperature update** across iterations.
-  Enable with `simulation.electro_thermal_iterations > 1` (steady-state current injection only).
-  This is first-order coupling; a finer per-segment temperature map is planned.
+**Still not modeled (yet):**
+- Copper zones/pours as a 2D sheet-resistance grid (important for planes/returns)
+- Temperature-dependent resistivity iteration (electro-thermal coupling loop)
 
 ### Simulation launch gating fixed
 - `Run Simulation` no longer blocks when component power is 0 **if** the mode is `current_injection`
@@ -54,7 +51,7 @@ Some key industrial features (terminal-based current injection UI) are still in 
    - Enforce that a *single* current path lives on a single electrical net.
    - Support explicit **supply** and **return** paths.
 
-2. **Routing-aware DC solve (in progress, now includes pours)**
+2. **Routing-aware DC solve**
    - Build a conductance (Laplacian) matrix for copper network and solve:
      \[
        G V = I
@@ -63,16 +60,16 @@ Some key industrial features (terminal-based current injection UI) are still in 
      \[
        I_e = \frac{V_i - V_j}{R_e}, \quad P_e = I_e^2 R_e = \frac{(V_i - V_j)^2}{R_e}
      \]
-   - Includes:
+   - Include:
      - traces: \(R=\rho L/(t w)\)
      - vias: plated barrel (annular cylinder)
-     - copper planes/zones: **sheet resistance mesh** (grid, parameter `plane_grid_mm`) (implemented in this snapshot)
+     - copper planes/zones: sheet resistance mesh (grid, parameter `plane_grid_mm`)
 
 3. **Joule-to-thermal mesh deposition**
    - Deposit per-edge Joule power into the 3D thermal mesh on the correct copper layer.
    - Use geometry-aware mapping (nearest-node / cell intersection) to avoid bias.
 
-4. **TVAC radiation: stable linearization (Python fallback implemented)**
+4. **TVAC radiation: stable Newton linearization**
    - Radiation boundary condition:
      \[
        q = \varepsilon \sigma A (T^4 - T_w^4)
@@ -83,12 +80,12 @@ Some key industrial features (terminal-based current injection UI) are still in 
      \]
    - Which becomes a **diagonal conductance** term \(h_{rad}=4\varepsilon\sigma A T_k^3\) in the matrix (improves solvability).
 
-5. **Mounting to a temperature box (Python fallback implemented)**
+5. **Mounting to a temperature box**
    - Replace pure Dirichlet by (optional) Robin/contact model:
      \[
        q = \frac{T - T_{box}}{R_\theta}
      \]
-- Implemented as diagonal conductance + RHS contribution (Python solver).
+   - Implemented as diagonal conductance + RHS contribution.
 
 ---
 
@@ -116,7 +113,7 @@ Copy the `tvac_thermal_analyzer/` folder into KiCad's `scripting/plugins/` direc
 ---
 
 ## Notes
-This snapshot is intentionally marked WIP. The next ZIP will focus on:
+This snapshot is intentionally marked WIP. The next ZIP will include:
 - pad-terminal current injection UI,
-- documentation upgrades (math + approximations + accuracy discussion),
-- performance tuning (plane grids can get large).
+- DC solve for currents + Joule mapping,
+- full README with numerical analysis discussion and a clearer “what’s modeled vs not modeled”.
