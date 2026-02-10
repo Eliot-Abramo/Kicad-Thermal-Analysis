@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# TVAC Thermal Analyzer - Build Script
+# TVAC Thermal Analyzer v4.0 - Build Script
 # ═══════════════════════════════════════════════════════════════
 set -e
 
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "╔══════════════════════════════════════════╗"
-echo "║  TVAC Thermal Analyzer – Build           ║"
+echo "║  TVAC Thermal Analyzer v4 – Build        ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
@@ -46,7 +46,7 @@ echo ""
 echo "[2/3] Compiling C thermal engine..."
 
 CC="${CC:-gcc}"
-CFLAGS="-O3 -march=native -shared -fPIC -Wall"
+CFLAGS="-O3 -march=native -shared -fPIC -Wall -Wno-stringop-overflow"
 SRC="thermal_engine.c"
 
 # Detect platform
@@ -57,6 +57,18 @@ case "$(uname -s)" in
     *)        OUT="libthermal_engine.so";;
 esac
 
+# Check for OpenMP support
+HAS_OPENMP=0
+echo "int main(){return 0;}" > /tmp/_omp_test.c
+if $CC -fopenmp /tmp/_omp_test.c -o /tmp/_omp_test 2>/dev/null; then
+    HAS_OPENMP=1
+    CFLAGS="$CFLAGS -fopenmp"
+    echo "  ✓ OpenMP support detected"
+else
+    echo "  ⚠ OpenMP not available (single-threaded build)"
+fi
+rm -f /tmp/_omp_test.c /tmp/_omp_test
+
 if [ ! -f "$SRC" ]; then
     echo "  ✗ $SRC not found!"; exit 1
 fi
@@ -65,7 +77,7 @@ $CC $CFLAGS -o "$OUT" "$SRC" -lm 2>&1 && {
     echo "  ✓ Compiled: $OUT ($(du -h "$OUT" | cut -f1))"
 } || {
     echo "  ⚠ C compilation failed. Will use Python/SciPy fallback solver."
-    echo "    (This is OK but ~3x slower)"
+    echo "    (This is OK but ~3-5x slower)"
 }
 
 # ── Step 3: Verify ─────────────────────────────────────────────
@@ -84,7 +96,9 @@ print('  ✓ Python code: OK')
 try:
     import ctypes
     lib = ctypes.CDLL('./$OUT')
-    print('  ✓ C engine: loaded')
+    ver = lib.thermal_get_version
+    ver.restype = ctypes.c_char_p
+    print(f'  ✓ C engine: loaded (v{ver().decode()})')
 except:
     print('  ⚠ C engine: not available (using SciPy fallback)')
 
