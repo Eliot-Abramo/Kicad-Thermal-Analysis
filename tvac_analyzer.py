@@ -43,31 +43,30 @@ from scipy.sparse.linalg import spsolve, cg as scipy_cg
 # §1  S-Expression Parser  (reads .kicad_pcb)
 # ═══════════════════════════════════════════════════════════════════════
 
-
 def _tokenize(text: str):
     """Tokenize KiCad S-expression format. Handles quoted strings with escapes."""
     i, n = 0, len(text)
     while i < n:
         c = text[i]
-        if c in " \t\r\n":
+        if c in ' \t\r\n':
             i += 1
-        elif c == "(":
-            yield "("
+        elif c == '(':
+            yield '('
             i += 1
-        elif c == ")":
-            yield ")"
+        elif c == ')':
+            yield ')'
             i += 1
         elif c == '"':
             j = i + 1
             while j < n and text[j] != '"':
-                if text[j] == "\\":
+                if text[j] == '\\':
                     j += 1
                 j += 1
-            yield text[i + 1 : j]
+            yield text[i+1:j]
             i = j + 1
         else:
             j = i
-            while j < n and text[j] not in " \t\r\n()":
+            while j < n and text[j] not in ' \t\r\n()':
                 j += 1
             yield text[i:j]
             i = j
@@ -82,22 +81,21 @@ def parse_sexpr(text: str):
         if pos[0] >= len(tokens):
             return None
         tok = tokens[pos[0]]
-        if tok == "(":
+        if tok == '(':
             pos[0] += 1
             lst = []
-            while pos[0] < len(tokens) and tokens[pos[0]] != ")":
+            while pos[0] < len(tokens) and tokens[pos[0]] != ')':
                 item = _parse()
                 if item is not None:
                     lst.append(item)
             pos[0] += 1  # skip ')'
             return lst
-        elif tok == ")":
+        elif tok == ')':
             pos[0] += 1
             return None
         else:
             pos[0] += 1
             return tok
-
     return _parse()
 
 
@@ -136,7 +134,6 @@ def _float(node, tag, default=0.0):
 # §2  Data Classes
 # ═══════════════════════════════════════════════════════════════════════
 
-
 @dataclass
 class Pt:
     x: float = 0.0
@@ -172,17 +169,15 @@ class Component:
     def bbox(self) -> Tuple[Pt, Pt]:
         if not self.pads:
             s = 2.0
-            return Pt(self.pos.x - s, self.pos.y - s), Pt(
-                self.pos.x + s, self.pos.y + s
-            )
+            return Pt(self.pos.x - s, self.pos.y - s), Pt(self.pos.x + s, self.pos.y + s)
         xs = [p.pos.x for p in self.pads]
         ys = [p.pos.y for p in self.pads]
         ws = [p.w / 2 for p in self.pads]
         hs = [p.h / 2 for p in self.pads]
-        return (
-            Pt(min(x - w for x, w in zip(xs, ws)), min(y - h for y, h in zip(ys, hs))),
-            Pt(max(x + w for x, w in zip(xs, ws)), max(y + h for y, h in zip(ys, hs))),
-        )
+        return (Pt(min(x - w for x, w in zip(xs, ws)),
+                   min(y - h for y, h in zip(ys, hs))),
+                Pt(max(x + w for x, w in zip(xs, ws)),
+                   max(y + h for y, h in zip(ys, hs))))
 
 
 @dataclass
@@ -204,7 +199,6 @@ class Trace:
 @dataclass
 class ArcTrace:
     """Arc segment on a copper layer."""
-
     net_name: str = ""
     net_code: int = 0
     start: Pt = field(default_factory=Pt)
@@ -248,10 +242,9 @@ class BoardOutline:
         pts = self.outline
         if len(pts) < 3:
             return (self.max_x - self.min_x) * (self.max_y - self.min_y)
-        a = sum(
-            pts[i].x * pts[(i + 1) % len(pts)].y - pts[(i + 1) % len(pts)].x * pts[i].y
-            for i in range(len(pts))
-        )
+        a = sum(pts[i].x * pts[(i + 1) % len(pts)].y -
+                pts[(i + 1) % len(pts)].x * pts[i].y
+                for i in range(len(pts)))
         return abs(a) / 2.0
 
 
@@ -275,7 +268,6 @@ class PCBData:
 # §3  KiCad 9 PCB File Reader
 # ═══════════════════════════════════════════════════════════════════════
 
-
 class KiCadPCBReader:
     """
     Reads KiCad 9 .kicad_pcb files.
@@ -289,10 +281,10 @@ class KiCadPCBReader:
     """
 
     def read(self, path: str) -> PCBData:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
             text = f.read()
         tree = parse_sexpr(text)
-        if not tree or tree[0] != "kicad_pcb":
+        if not tree or tree[0] != 'kicad_pcb':
             raise ValueError("Not a valid kicad_pcb file")
         return self._extract(tree)
 
@@ -330,7 +322,7 @@ class KiCadPCBReader:
 
     def _read_nets(self, root):
         nets = {}
-        for n in _find_all(root, "net"):
+        for n in _find_all(root, 'net'):
             if len(n) >= 3:
                 try:
                     nets[int(n[1])] = n[2]
@@ -339,7 +331,7 @@ class KiCadPCBReader:
         return nets
 
     def _read_layers(self, root):
-        layers_node = _find(root, "layers")
+        layers_node = _find(root, 'layers')
         cu = []
         if layers_node:
             for c in layers_node[1:]:
@@ -352,32 +344,30 @@ class KiCadPCBReader:
 
     def _read_stackup(self, root, pcb):
         """Read stackup for layer thicknesses."""
-        setup = _find(root, "setup")
+        setup = _find(root, 'setup')
         if not setup:
             return
-        st = _find(setup, "stackup")
+        st = _find(setup, 'stackup')
         if not st:
             return
 
         total_thickness = 0.0
-        for layer_node in _find_all(st, "layer"):
+        for layer_node in _find_all(st, 'layer'):
             if len(layer_node) < 2:
                 continue
             layer_name = layer_node[1]
-            thickness = _float(layer_node, "thickness", 0.0)
+            thickness = _float(layer_node, 'thickness', 0.0)
             total_thickness += thickness
 
             # Store copper thickness
-            if isinstance(layer_name, str) and ".Cu" in layer_name:
+            if isinstance(layer_name, str) and '.Cu' in layer_name:
                 pcb.copper_thickness_um[layer_name] = thickness * 1000  # mm to μm
 
-            pcb.layer_stackup.append(
-                {
-                    "name": layer_name,
-                    "thickness_mm": thickness,
-                    "type": _val(layer_node, "type", ""),
-                }
-            )
+            pcb.layer_stackup.append({
+                'name': layer_name,
+                'thickness_mm': thickness,
+                'type': _val(layer_node, 'type', ''),
+            })
 
         if total_thickness > 0:
             pcb.board_thickness_mm = total_thickness
@@ -387,9 +377,9 @@ class KiCadPCBReader:
         pts = []
 
         # gr_line on Edge.Cuts
-        for line in _find_all(root, "gr_line"):
-            if _val(line, "layer", "") == "Edge.Cuts":
-                s, e = _find(line, "start"), _find(line, "end")
+        for line in _find_all(root, 'gr_line'):
+            if _val(line, 'layer', '') == 'Edge.Cuts':
+                s, e = _find(line, 'start'), _find(line, 'end')
                 if s and e and len(s) >= 3 and len(e) >= 3:
                     try:
                         pts.append(Pt(float(s[1]), float(s[2])))
@@ -398,9 +388,9 @@ class KiCadPCBReader:
                         pass
 
         # gr_rect on Edge.Cuts
-        for rect in _find_all(root, "gr_rect"):
-            if _val(rect, "layer", "") == "Edge.Cuts":
-                s, e = _find(rect, "start"), _find(rect, "end")
+        for rect in _find_all(root, 'gr_rect'):
+            if _val(rect, 'layer', '') == 'Edge.Cuts':
+                s, e = _find(rect, 'start'), _find(rect, 'end')
                 if s and e and len(s) >= 3 and len(e) >= 3:
                     try:
                         x1, y1 = float(s[1]), float(s[2])
@@ -410,11 +400,11 @@ class KiCadPCBReader:
                         pass
 
         # gr_poly on Edge.Cuts
-        for poly in _find_all(root, "gr_poly"):
-            if _val(poly, "layer", "") == "Edge.Cuts":
-                ptsnode = _find(poly, "pts")
+        for poly in _find_all(root, 'gr_poly'):
+            if _val(poly, 'layer', '') == 'Edge.Cuts':
+                ptsnode = _find(poly, 'pts')
                 if ptsnode:
-                    for xy in _find_all(ptsnode, "xy"):
+                    for xy in _find_all(ptsnode, 'xy'):
                         if len(xy) >= 3:
                             try:
                                 pts.append(Pt(float(xy[1]), float(xy[2])))
@@ -422,8 +412,8 @@ class KiCadPCBReader:
                                 pass
 
         # gr_arc on Edge.Cuts — approximate with line segments
-        for arc in _find_all(root, "gr_arc"):
-            if _val(arc, "layer", "") == "Edge.Cuts":
+        for arc in _find_all(root, 'gr_arc'):
+            if _val(arc, 'layer', '') == 'Edge.Cuts':
                 arc_pts = self._arc_to_points(arc)
                 pts.extend(arc_pts)
 
@@ -448,9 +438,9 @@ class KiCadPCBReader:
         """Convert arc to series of points for approximation."""
         pts = []
         # KiCad 9: arc has start, mid, end
-        start_n = _find(arc_node, "start")
-        mid_n = _find(arc_node, "mid")
-        end_n = _find(arc_node, "end")
+        start_n = _find(arc_node, 'start')
+        mid_n = _find(arc_node, 'mid')
+        end_n = _find(arc_node, 'end')
 
         if not start_n or not end_n:
             return pts
@@ -468,17 +458,15 @@ class KiCadPCBReader:
                 center = self._circle_center(sx, sy, mx, my, ex, ey)
                 if center:
                     cx, cy = center
-                    r = math.sqrt((sx - cx) ** 2 + (sy - cy) ** 2)
+                    r = math.sqrt((sx - cx)**2 + (sy - cy)**2)
                     a_start = math.atan2(sy - cy, sx - cx)
                     a_end = math.atan2(ey - cy, ex - cx)
                     a_mid = math.atan2(my - cy, mx - cx)
 
                     # Determine direction
                     def normalize_angle(a):
-                        while a < -math.pi:
-                            a += 2 * math.pi
-                        while a > math.pi:
-                            a -= 2 * math.pi
+                        while a < -math.pi: a += 2 * math.pi
+                        while a > math.pi: a -= 2 * math.pi
                         return a
 
                     da1 = normalize_angle(a_mid - a_start)
@@ -517,26 +505,22 @@ class KiCadPCBReader:
         d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
         if abs(d) < 1e-10:
             return None
-        ux = (
-            (ax * ax + ay * ay) * (by - cy)
-            + (bx * bx + by * by) * (cy - ay)
-            + (cx * cx + cy * cy) * (ay - by)
-        ) / d
-        uy = (
-            (ax * ax + ay * ay) * (cx - bx)
-            + (bx * bx + by * by) * (ax - cx)
-            + (cx * cx + cy * cy) * (bx - ax)
-        ) / d
+        ux = ((ax*ax + ay*ay) * (by - cy) +
+              (bx*bx + by*by) * (cy - ay) +
+              (cx*cx + cy*cy) * (ay - by)) / d
+        uy = ((ax*ax + ay*ay) * (cx - bx) +
+              (bx*bx + by*by) * (ax - cx) +
+              (cx*cx + cy*cy) * (bx - ax)) / d
         return (ux, uy)
 
     def _read_footprints(self, root, nets):
         comps = []
-        for fp in _find_all(root, "footprint"):
+        for fp in _find_all(root, 'footprint'):
             c = Component()
             if len(fp) > 1:
                 c.footprint = fp[1] if isinstance(fp[1], str) else str(fp[1])
 
-            at = _find(fp, "at")
+            at = _find(fp, 'at')
             if at and len(at) >= 3:
                 try:
                     c.pos = Pt(float(at[1]), float(at[2]))
@@ -545,16 +529,16 @@ class KiCadPCBReader:
                 except (ValueError, TypeError):
                     pass
 
-            c.layer = _val(fp, "layer", "F.Cu")
+            c.layer = _val(fp, 'layer', 'F.Cu')
 
             # KiCad 9: properties
-            for prop in _find_all(fp, "property"):
+            for prop in _find_all(fp, 'property'):
                 if len(prop) >= 3:
-                    if prop[1] == "Reference":
+                    if prop[1] == 'Reference':
                         c.ref = prop[2]
-                    elif prop[1] == "Value":
+                    elif prop[1] == 'Value':
                         c.value = prop[2]
-                    elif prop[1] == "POWER_DISSIPATION":
+                    elif prop[1] == 'POWER_DISSIPATION':
                         try:
                             c.power_w = float(prop[2])
                         except (ValueError, TypeError):
@@ -562,34 +546,28 @@ class KiCadPCBReader:
 
             # Fallback: fp_text (KiCad 5/6 compat)
             if not c.ref:
-                for ft in _find_all(fp, "fp_text"):
+                for ft in _find_all(fp, 'fp_text'):
                     if len(ft) >= 3:
-                        if ft[1] == "reference":
+                        if ft[1] == 'reference':
                             c.ref = ft[2]
-                        elif ft[1] == "value" and not c.value:
+                        elif ft[1] == 'value' and not c.value:
                             c.value = ft[2]
 
             # Determine if component is on back side (for pad mirroring)
-            is_back = c.layer.startswith("B.")
+            is_back = c.layer.startswith('B.')
 
             # Parse pads
-            for pad_node in _find_all(fp, "pad"):
+            for pad_node in _find_all(fp, 'pad'):
                 pad = Pad()
                 if len(pad_node) >= 2:
-                    pad.name = (
-                        pad_node[1]
-                        if isinstance(pad_node[1], str)
-                        else str(pad_node[1])
-                    )
+                    pad.name = pad_node[1] if isinstance(pad_node[1], str) else str(pad_node[1])
                 if len(pad_node) >= 3:
-                    pad.pad_type = (
-                        pad_node[2] if isinstance(pad_node[2], str) else "smd"
-                    )
+                    pad.pad_type = pad_node[2] if isinstance(pad_node[2], str) else "smd"
                 if len(pad_node) >= 4:
                     pad.shape = pad_node[3] if isinstance(pad_node[3], str) else "rect"
                 pad.ref = c.ref
 
-                at_p = _find(pad_node, "at")
+                at_p = _find(pad_node, 'at')
                 if at_p and len(at_p) >= 3:
                     try:
                         lx, ly = float(at_p[1]), float(at_p[2])
@@ -602,26 +580,26 @@ class KiCadPCBReader:
                         rot = math.radians(c.rotation)
                         pad.pos = Pt(
                             c.pos.x + lx * math.cos(rot) - ly * math.sin(rot),
-                            c.pos.y + lx * math.sin(rot) + ly * math.cos(rot),
+                            c.pos.y + lx * math.sin(rot) + ly * math.cos(rot)
                         )
                     except (ValueError, TypeError):
                         pad.pos = Pt(c.pos.x, c.pos.y)
 
-                sz = _find(pad_node, "size")
+                sz = _find(pad_node, 'size')
                 if sz and len(sz) >= 3:
                     try:
                         pad.w, pad.h = float(sz[1]), float(sz[2])
                     except (ValueError, TypeError):
                         pass
 
-                dr = _find(pad_node, "drill")
+                dr = _find(pad_node, 'drill')
                 if dr and len(dr) >= 2:
                     try:
                         pad.drill = float(dr[1])
                     except (ValueError, TypeError):
                         pass
 
-                net_node = _find(pad_node, "net")
+                net_node = _find(pad_node, 'net')
                 if net_node and len(net_node) >= 3:
                     try:
                         pad.net_code = int(net_node[1])
@@ -629,7 +607,7 @@ class KiCadPCBReader:
                     except (ValueError, TypeError):
                         pass
 
-                layers_node = _find(pad_node, "layers")
+                layers_node = _find(pad_node, 'layers')
                 if layers_node:
                     pad.layers = [l for l in layers_node[1:] if isinstance(l, str)]
 
@@ -641,22 +619,22 @@ class KiCadPCBReader:
 
     def _read_segments(self, root, nets):
         traces = []
-        for seg in _find_all(root, "segment"):
+        for seg in _find_all(root, 'segment'):
             t = Trace()
-            s, e = _find(seg, "start"), _find(seg, "end")
+            s, e = _find(seg, 'start'), _find(seg, 'end')
             if s and len(s) >= 3 and e and len(e) >= 3:
                 try:
                     t.start = Pt(float(s[1]), float(s[2]))
                     t.end = Pt(float(e[1]), float(e[2]))
                 except (ValueError, TypeError):
                     continue
-            t.width_mm = _float(seg, "width", 0.25)
-            t.layer = _val(seg, "layer", "")
-            net_node = _find(seg, "net")
+            t.width_mm = _float(seg, 'width', 0.25)
+            t.layer = _val(seg, 'layer', '')
+            net_node = _find(seg, 'net')
             if net_node and len(net_node) >= 2:
                 try:
                     t.net_code = int(net_node[1])
-                    t.net_name = nets.get(t.net_code, "")
+                    t.net_name = nets.get(t.net_code, '')
                 except (ValueError, TypeError):
                     pass
             traces.append(t)
@@ -665,15 +643,15 @@ class KiCadPCBReader:
     def _read_arcs(self, root, nets):
         """Read arc segments (KiCad 7+)."""
         arcs = []
-        for arc in _find_all(root, "arc"):
+        for arc in _find_all(root, 'arc'):
             # Check this is a trace arc (has net), not a graphic arc
-            net_node = _find(arc, "net")
+            net_node = _find(arc, 'net')
             if not net_node:
                 continue
             a = ArcTrace()
-            s = _find(arc, "start")
-            m = _find(arc, "mid")
-            e = _find(arc, "end")
+            s = _find(arc, 'start')
+            m = _find(arc, 'mid')
+            e = _find(arc, 'end')
             if s and len(s) >= 3 and e and len(e) >= 3:
                 try:
                     a.start = Pt(float(s[1]), float(s[2]))
@@ -685,12 +663,12 @@ class KiCadPCBReader:
                     a.mid = Pt(float(m[1]), float(m[2]))
                 except (ValueError, TypeError):
                     pass
-            a.width_mm = _float(arc, "width", 0.25)
-            a.layer = _val(arc, "layer", "")
+            a.width_mm = _float(arc, 'width', 0.25)
+            a.layer = _val(arc, 'layer', '')
             if net_node and len(net_node) >= 2:
                 try:
                     a.net_code = int(net_node[1])
-                    a.net_name = nets.get(a.net_code, "")
+                    a.net_name = nets.get(a.net_code, '')
                 except (ValueError, TypeError):
                     pass
             arcs.append(a)
@@ -698,31 +676,31 @@ class KiCadPCBReader:
 
     def _read_vias(self, root, nets):
         vias = []
-        for v in _find_all(root, "via"):
+        for v in _find_all(root, 'via'):
             via = Via()
-            at = _find(v, "at")
+            at = _find(v, 'at')
             if at and len(at) >= 3:
                 try:
                     via.pos = Pt(float(at[1]), float(at[2]))
                 except (ValueError, TypeError):
                     continue
-            via.diam_mm = _float(v, "size", 0.6)
-            via.drill_mm = _float(v, "drill", 0.3)
+            via.diam_mm = _float(v, 'size', 0.6)
+            via.drill_mm = _float(v, 'drill', 0.3)
 
             # Via type
-            vtype = _val(v, "type", "through")
+            vtype = _val(v, 'type', 'through')
             if vtype:
                 via.via_type = vtype
 
-            net_node = _find(v, "net")
+            net_node = _find(v, 'net')
             if net_node and len(net_node) >= 2:
                 try:
                     via.net_code = int(net_node[1])
-                    via.net_name = nets.get(via.net_code, "")
+                    via.net_name = nets.get(via.net_code, '')
                 except (ValueError, TypeError):
                     pass
 
-            layers_node = _find(v, "layers")
+            layers_node = _find(v, 'layers')
             if layers_node and len(layers_node) >= 3:
                 via.layers = (layers_node[1], layers_node[2])
 
@@ -731,38 +709,36 @@ class KiCadPCBReader:
 
     def _read_zones(self, root, nets):
         zones = []
-        for z in _find_all(root, "zone"):
+        for z in _find_all(root, 'zone'):
             zone = Zone()
 
-            net_node = _find(z, "net")
+            net_node = _find(z, 'net')
             if net_node and len(net_node) >= 2:
                 try:
                     zone.net_code = int(net_node[1])
                 except (ValueError, TypeError):
                     pass
 
-            nn = _find(z, "net_name")
-            zone.net_name = (
-                nn[1] if nn and len(nn) >= 2 else nets.get(zone.net_code, "")
-            )
+            nn = _find(z, 'net_name')
+            zone.net_name = nn[1] if nn and len(nn) >= 2 else nets.get(zone.net_code, '')
 
-            zone.layer = _val(z, "layer", "")
+            zone.layer = _val(z, 'layer', '')
             if not zone.layer:
-                ln = _find(z, "layers")
+                ln = _find(z, 'layers')
                 if ln and len(ln) > 1:
                     zone.layer = ln[1]
 
             try:
-                zone.priority = int(_val(z, "priority", "0"))
+                zone.priority = int(_val(z, 'priority', '0'))
             except (ValueError, TypeError):
                 pass
 
             # Read the zone outline (user-drawn boundary)
-            poly = _find(z, "polygon")
+            poly = _find(z, 'polygon')
             if poly:
-                ptsnode = _find(poly, "pts")
+                ptsnode = _find(poly, 'pts')
                 if ptsnode:
-                    for xy in _find_all(ptsnode, "xy"):
+                    for xy in _find_all(ptsnode, 'xy'):
                         if len(xy) >= 3:
                             try:
                                 zone.outline.append(Pt(float(xy[1]), float(xy[2])))
@@ -771,12 +747,12 @@ class KiCadPCBReader:
 
             # Read filled polygons (actual copper fill) — KiCad 6+
             # These are under (filled_polygon (pts (xy ...)))
-            for fp in _find_all(z, "filled_polygon"):
-                fill_layer = _val(fp, "layer", zone.layer)
-                ptsnode = _find(fp, "pts")
+            for fp in _find_all(z, 'filled_polygon'):
+                fill_layer = _val(fp, 'layer', zone.layer)
+                ptsnode = _find(fp, 'pts')
                 if ptsnode:
                     poly_pts = []
-                    for xy in _find_all(ptsnode, "xy"):
+                    for xy in _find_all(ptsnode, 'xy'):
                         if len(xy) >= 3:
                             try:
                                 poly_pts.append(Pt(float(xy[1]), float(xy[2])))
@@ -796,12 +772,8 @@ class KiCadPCBReader:
         for c in comps:
             fp = c.footprint.lower()
             ref = c.ref.lower()
-            if (
-                "mountinghole" in fp
-                or "mounting_hole" in fp
-                or "mounting-hole" in fp
-                or ref.startswith("h")
-            ):
+            if ('mountinghole' in fp or 'mounting_hole' in fp or
+                'mounting-hole' in fp or ref.startswith('h')):
                 holes.append(c.pos)
         return holes
 
@@ -809,7 +781,6 @@ class KiCadPCBReader:
 # ═══════════════════════════════════════════════════════════════════════
 # §4  Configuration
 # ═══════════════════════════════════════════════════════════════════════
-
 
 @dataclass
 class CompPower:
@@ -891,65 +862,36 @@ class Config:
 
     def save(self, path):
         data = {
-            "version": "4.0.0",
-            "comp_power": [asdict(cp) for cp in self.comp_power],
-            "heatsinks": [asdict(hs) for hs in self.heatsinks],
-            "mounting": [asdict(mp) for mp in self.mounting],
-            "current_paths": [asdict(cp) for cp in self.current_paths],
-            "sim": asdict(self.sim),
+            'version': '4.0.0',
+            'comp_power': [asdict(cp) for cp in self.comp_power],
+            'heatsinks': [asdict(hs) for hs in self.heatsinks],
+            'mounting': [asdict(mp) for mp in self.mounting],
+            'current_paths': [asdict(cp) for cp in self.current_paths],
+            'sim': asdict(self.sim),
         }
-        with open(path, "w") as f:
+        with open(path, 'w') as f:
             json.dump(data, f, indent=2)
 
     @classmethod
     def load(cls, path):
-        with open(path, "r") as f:
+        with open(path, 'r') as f:
             data = json.load(f)
         cfg = cls()
-        for cp in data.get("comp_power", []):
-            cfg.comp_power.append(
-                CompPower(
-                    **{
-                        k: v
-                        for k, v in cp.items()
-                        if k in CompPower.__dataclass_fields__
-                    }
-                )
-            )
-        for hs in data.get("heatsinks", []):
-            cfg.heatsinks.append(
-                HeatsinkCfg(
-                    **{
-                        k: v
-                        for k, v in hs.items()
-                        if k in HeatsinkCfg.__dataclass_fields__
-                    }
-                )
-            )
-        for mp in data.get("mounting", []):
-            cfg.mounting.append(
-                MountingCfg(
-                    **{
-                        k: v
-                        for k, v in mp.items()
-                        if k in MountingCfg.__dataclass_fields__
-                    }
-                )
-            )
-        for cp in data.get("current_paths", []):
-            cfg.current_paths.append(
-                CurrentPathCfg(
-                    **{
-                        k: v
-                        for k, v in cp.items()
-                        if k in CurrentPathCfg.__dataclass_fields__
-                    }
-                )
-            )
-        sim = data.get("sim", {})
-        cfg.sim = SimCfg(
-            **{k: v for k, v in sim.items() if k in SimCfg.__dataclass_fields__}
-        )
+        for cp in data.get('comp_power', []):
+            cfg.comp_power.append(CompPower(**{k: v for k, v in cp.items()
+                                               if k in CompPower.__dataclass_fields__}))
+        for hs in data.get('heatsinks', []):
+            cfg.heatsinks.append(HeatsinkCfg(**{k: v for k, v in hs.items()
+                                                if k in HeatsinkCfg.__dataclass_fields__}))
+        for mp in data.get('mounting', []):
+            cfg.mounting.append(MountingCfg(**{k: v for k, v in mp.items()
+                                               if k in MountingCfg.__dataclass_fields__}))
+        for cp in data.get('current_paths', []):
+            cfg.current_paths.append(CurrentPathCfg(**{k: v for k, v in cp.items()
+                                                       if k in CurrentPathCfg.__dataclass_fields__}))
+        sim = data.get('sim', {})
+        cfg.sim = SimCfg(**{k: v for k, v in sim.items()
+                            if k in SimCfg.__dataclass_fields__})
         return cfg
 
 
@@ -960,22 +902,22 @@ class Config:
 SIGMA = 5.670374419e-8  # Stefan-Boltzmann W/(m²·K⁴)
 C2K = 273.15
 CU_RESISTIVITY = 1.724e-8  # Ω·m at 20°C (IACS standard, IEC 60028)
-CU_TEMP_COEFF = 0.00393  # 1/K, for temperature-dependent resistivity
+CU_TEMP_COEFF = 0.00393   # 1/K, for temperature-dependent resistivity
 
 MATERIALS = {
-    "FR4": dict(k=0.29, cp=1100, rho=1850, emiss=0.90),
-    "FR4_HIGH_TG": dict(k=0.35, cp=1100, rho=1900, emiss=0.90),
-    "COPPER": dict(k=401.0, cp=385, rho=8960, emiss=0.03),
-    "CU_OXIDIZED": dict(k=401.0, cp=385, rho=8960, emiss=0.65),
-    "SOLDER_MASK": dict(k=0.25, cp=1200, rho=1200, emiss=0.90),
-    "PREPREG": dict(k=0.29, cp=1100, rho=1850, emiss=0.90),
+    'FR4':         dict(k=0.29,  cp=1100, rho=1850, emiss=0.90),
+    'FR4_HIGH_TG': dict(k=0.35,  cp=1100, rho=1900, emiss=0.90),
+    'COPPER':      dict(k=401.0, cp=385,  rho=8960, emiss=0.03),
+    'CU_OXIDIZED': dict(k=401.0, cp=385,  rho=8960, emiss=0.65),
+    'SOLDER_MASK': dict(k=0.25,  cp=1200, rho=1200, emiss=0.90),
+    'PREPREG':     dict(k=0.29,  cp=1100, rho=1850, emiss=0.90),
 }
 
 HEATSINK_MATERIALS = {
-    "ALUMINUM_6061": dict(k=167.0, cp=896, rho=2700, emiss=0.09),
-    "ALUMINUM_6063": dict(k=200.0, cp=900, rho=2690, emiss=0.09),
-    "AL_ANODIZED": dict(k=167.0, cp=896, rho=2700, emiss=0.85),
-    "COPPER_HEATSINK": dict(k=385.0, cp=385, rho=8960, emiss=0.65),
+    'ALUMINUM_6061':   dict(k=167.0, cp=896,  rho=2700, emiss=0.09),
+    'ALUMINUM_6063':   dict(k=200.0, cp=900,  rho=2690, emiss=0.09),
+    'AL_ANODIZED':     dict(k=167.0, cp=896,  rho=2700, emiss=0.85),
+    'COPPER_HEATSINK': dict(k=385.0, cp=385,  rho=8960, emiss=0.65),
 }
 
 
@@ -983,43 +925,39 @@ HEATSINK_MATERIALS = {
 # §6  Thermal Mesh & Node
 # ═══════════════════════════════════════════════════════════════════════
 
-
 @dataclass
 class TNode:
     """Thermal mesh node with full physical properties."""
-
     idx: int = 0
-    x: float = 0.0  # mm
-    y: float = 0.0  # mm
-    z: float = 0.0  # mm
+    x: float = 0.0        # mm
+    y: float = 0.0        # mm
+    z: float = 0.0        # mm
     layer: int = 0
-    dx: float = 1.0  # cell width in mm
-    dy: float = 1.0  # cell height in mm
-    dz: float = 0.2  # cell depth in mm
+    dx: float = 1.0       # cell width in mm
+    dy: float = 1.0       # cell height in mm
+    dz: float = 0.2       # cell depth in mm
 
     # Material properties
-    k: float = 0.29  # W/(m·K) effective in-plane conductivity (parallel mixture)
-    k_z: float = 0.29  # W/(m·K) effective through-plane conductivity (series mixture)
-    cp: float = 1100.0  # J/(kg·K)
-    rho: float = 1850.0  # kg/m³
+    k: float = 0.29       # W/(m·K) effective in-plane conductivity (parallel mixture)
+    k_z: float = 0.29     # W/(m·K) effective through-plane conductivity (series mixture)
+    cp: float = 1100.0    # J/(kg·K)
+    rho: float = 1850.0   # kg/m³
     emiss_top: float = 0.9
     emiss_bot: float = 0.9
     copper_frac: float = 0.0  # copper area fraction [0,1]
 
     # Geometric quantities
-    vol: float = 0.0  # m³
-    surf_top: float = 0.0  # m² (top surface for radiation)
-    surf_bot: float = 0.0  # m² (bottom surface for radiation)
-    heat: float = 0.0  # W
+    vol: float = 0.0      # m³
+    surf_top: float = 0.0 # m² (top surface for radiation)
+    surf_bot: float = 0.0 # m² (bottom surface for radiation)
+    heat: float = 0.0     # W
 
     # Boundary conditions
     fixed: bool = False
-    T_fixed: float = 25.0  # °C
+    T_fixed: float = 25.0 # °C
 
     # Connectivity
-    nbrs: Dict[int, float] = field(
-        default_factory=dict
-    )  # {node_idx: conductance_W_per_K}
+    nbrs: Dict[int, float] = field(default_factory=dict)  # {node_idx: conductance_W_per_K}
 
 
 @dataclass
@@ -1075,7 +1013,6 @@ class TResult:
 #   5. Separate top/bottom emissivity
 # ═══════════════════════════════════════════════════════════════════════
 
-
 class MeshGen:
     def __init__(self, pcb: PCBData, cfg: Config):
         self.pcb = pcb
@@ -1103,9 +1040,9 @@ class MeshGen:
         refine_pts = self._compute_refinement_points(min_res, base_res)
 
         if self.cfg.sim.use_adaptive_mesh and refine_pts:
-            xs, ys = self._build_adaptive_grid_1d(
-                bx0, bx1, by0, by1, base_res, min_res, max_res, refine_pts
-            )
+            xs, ys = self._build_adaptive_grid_1d(bx0, bx1, by0, by1,
+                                                   base_res, min_res, max_res,
+                                                   refine_pts)
         else:
             nx = max(2, int((bx1 - bx0) / base_res) + 1)
             ny = max(2, int((by1 - by0) / base_res) + 1)
@@ -1145,8 +1082,8 @@ class MeshGen:
         nodes = []
         idx = 0
         for iz in range(nz):
-            is_top = iz == 0
-            is_bot = iz == nz - 1
+            is_top = (iz == 0)
+            is_bot = (iz == nz - 1)
             for iy in range(ny):
                 for ix in range(nx):
                     n = TNode(idx=idx, x=xs[ix], y=ys[iy], z=zs[iz], layer=iz)
@@ -1195,12 +1132,12 @@ class MeshGen:
                         n.surf_bot = 0.0
 
                     # Default material: FR4
-                    m = MATERIALS["FR4"]
-                    n.k = m["k"]
-                    n.cp = m["cp"]
-                    n.rho = m["rho"]
-                    n.emiss_top = m["emiss"]
-                    n.emiss_bot = m["emiss"]
+                    m = MATERIALS['FR4']
+                    n.k = m['k']
+                    n.cp = m['cp']
+                    n.rho = m['rho']
+                    n.emiss_top = m['emiss']
+                    n.emiss_bot = m['emiss']
 
                     nodes.append(n)
                     idx += 1
@@ -1265,9 +1202,9 @@ class MeshGen:
 
         return pts
 
-    def _build_adaptive_grid_1d(
-        self, bx0, bx1, by0, by1, base_res, min_res, max_res, refine_pts
-    ):
+    def _build_adaptive_grid_1d(self, bx0, bx1, by0, by1,
+                                 base_res, min_res, max_res,
+                                 refine_pts):
         """Build non-uniform 1D grids in x and y with local refinement."""
 
         def build_axis(a0, a1, base, min_r, max_r, pts_on_axis, is_x):
@@ -1283,7 +1220,7 @@ class MeshGen:
                 positions.add(round(p, 4))
 
             # Refine near special points
-            for px, py, res, radius in refine_pts:
+            for (px, py, res, radius) in refine_pts:
                 center = px if is_x else py
                 if center < a0 - radius or center > a1 + radius:
                     continue
@@ -1325,9 +1262,8 @@ class MeshGen:
     def _compute_copper_fractions(self, mesh, xs, ys):
         """Compute actual copper area fraction for each mesh cell."""
         nx, ny = mesh.nx, mesh.ny
-        layer_map = {
-            name: i for i, name in enumerate(self.pcb.copper_layers) if i < mesh.nz
-        }
+        layer_map = {name: i for i, name in enumerate(self.pcb.copper_layers)
+                     if i < mesh.nz}
 
         # Initialize copper fraction to 0
         for n in mesh.nodes:
@@ -1339,11 +1275,7 @@ class MeshGen:
             if iz < 0:
                 continue
 
-            polys = (
-                z.filled_polygons
-                if z.filled_polygons
-                else ([z.outline] if z.outline else [])
-            )
+            polys = z.filled_polygons if z.filled_polygons else ([z.outline] if z.outline else [])
             for poly in polys:
                 if len(poly) < 3:
                     continue
@@ -1366,9 +1298,9 @@ class MeshGen:
             for iy in range(ny):
                 for ix in range(nx):
                     n = mesh.nodes[mesh.idx(ix, iy, iz)]
-                    dist = self._pt_seg_dist(
-                        n.x, n.y, tr.start.x, tr.start.y, tr.end.x, tr.end.y
-                    )
+                    dist = self._pt_seg_dist(n.x, n.y,
+                                             tr.start.x, tr.start.y,
+                                             tr.end.x, tr.end.y)
                     if dist <= hw + n.dx * 0.5:
                         # Estimate overlap fraction
                         overlap = max(0, hw - dist + n.dx * 0.3) / n.dx
@@ -1388,9 +1320,9 @@ class MeshGen:
                 for iy in range(ny):
                     for ix in range(nx):
                         n = mesh.nodes[mesh.idx(ix, iy, iz)]
-                        dist = self._pt_seg_dist(
-                            n.x, n.y, seg_start.x, seg_start.y, seg_end.x, seg_end.y
-                        )
+                        dist = self._pt_seg_dist(n.x, n.y,
+                                                 seg_start.x, seg_start.y,
+                                                 seg_end.x, seg_end.y)
                         if dist <= hw + n.dx * 0.5:
                             overlap = max(0, hw - dist + n.dx * 0.3) / n.dx
                             n.copper_frac = max(n.copper_frac, min(1.0, overlap * 0.95))
@@ -1405,9 +1337,7 @@ class MeshGen:
                 for iy in range(ny):
                     for ix in range(nx):
                         n = mesh.nodes[mesh.idx(ix, iy, iz)]
-                        dist = math.sqrt(
-                            (n.x - via.pos.x) ** 2 + (n.y - via.pos.y) ** 2
-                        )
+                        dist = math.sqrt((n.x - via.pos.x)**2 + (n.y - via.pos.y)**2)
                         if dist <= r + n.dx * 0.3:
                             n.copper_frac = max(n.copper_frac, 0.9)
 
@@ -1419,15 +1349,16 @@ class MeshGen:
             return segments
 
         center = KiCadPCBReader._circle_center(
-            arc.start.x, arc.start.y, arc.mid.x, arc.mid.y, arc.end.x, arc.end.y
-        )
+            arc.start.x, arc.start.y,
+            arc.mid.x, arc.mid.y,
+            arc.end.x, arc.end.y)
 
         if not center:
             segments.append((arc.start, arc.end))
             return segments
 
         cx, cy = center
-        r = math.sqrt((arc.start.x - cx) ** 2 + (arc.start.y - cy) ** 2)
+        r = math.sqrt((arc.start.x - cx)**2 + (arc.start.y - cy)**2)
         a_start = math.atan2(arc.start.y - cy, arc.start.x - cx)
         a_end = math.atan2(arc.end.y - cy, arc.end.x - cx)
 
@@ -1449,9 +1380,9 @@ class MeshGen:
 
     def _apply_material_properties(self, mesh):
         """Apply effective thermal properties based on copper fraction."""
-        cu = MATERIALS["COPPER"]
-        fr4 = MATERIALS["FR4"]
-        sm = MATERIALS["SOLDER_MASK"]
+        cu = MATERIALS['COPPER']
+        fr4 = MATERIALS['FR4']
+        sm = MATERIALS['SOLDER_MASK']
 
         for n in mesh.nodes:
             f = n.copper_frac
@@ -1459,52 +1390,52 @@ class MeshGen:
             # Effective in-plane conductivity: parallel (Voigt) mixture rule
             # k_xy = f·k_cu + (1-f)·k_fr4
             # Ref: Incropera §3.1, Dede et al. IEEE Trans CPMT 2015
-            n.k = f * cu["k"] + (1.0 - f) * fr4["k"]
+            n.k = f * cu['k'] + (1.0 - f) * fr4['k']
 
             # Effective through-plane conductivity: series (Reuss) mixture rule
             # 1/k_z = f/k_cu + (1-f)/k_fr4
             # For f=0.5: k_xy ≈ 201 W/(m·K), k_z ≈ 0.58 W/(m·K)  (ratio ~347:1)
             if f > 0 and f < 1.0:
-                n.k_z = 1.0 / (f / cu["k"] + (1.0 - f) / fr4["k"])
+                n.k_z = 1.0 / (f / cu['k'] + (1.0 - f) / fr4['k'])
             else:
                 n.k_z = n.k  # pure material is isotropic
 
             # Effective volumetric properties
-            n.cp = f * cu["cp"] + (1.0 - f) * fr4["cp"]
-            n.rho = f * cu["rho"] + (1.0 - f) * fr4["rho"]
+            n.cp = f * cu['cp'] + (1.0 - f) * fr4['cp']
+            n.rho = f * cu['rho'] + (1.0 - f) * fr4['rho']
 
             # Emissivity: top and bottom surfaces
             # Top surface: solder mask over copper (or bare FR4)
             if n.layer == 0:  # top layer
-                n.emiss_top = sm["emiss"]  # solder mask
+                n.emiss_top = sm['emiss']  # solder mask
                 n.emiss_bot = 0.0  # internal interface, no radiation
             elif n.layer == mesh.nz - 1:  # bottom layer
                 n.emiss_top = 0.0  # internal interface
-                n.emiss_bot = sm["emiss"]  # solder mask
+                n.emiss_bot = sm['emiss']  # solder mask
             else:
                 n.emiss_top = 0.0
                 n.emiss_bot = 0.0
 
             # If this is a single-layer model
             if mesh.nz == 1:
-                n.emiss_top = sm["emiss"]
-                n.emiss_bot = sm["emiss"]
+                n.emiss_top = sm['emiss']
+                n.emiss_bot = sm['emiss']
 
     def _apply_heatsinks(self, mesh, xs, ys):
         for hs in self.cfg.heatsinks:
             if len(hs.polygon) < 3:
                 continue
-            mat = HEATSINK_MATERIALS.get(
-                hs.material, HEATSINK_MATERIALS["ALUMINUM_6061"]
-            )
-            emiss = hs.emissivity if hs.emissivity is not None else mat["emiss"]
+            mat = HEATSINK_MATERIALS.get(hs.material,
+                                         HEATSINK_MATERIALS['ALUMINUM_6061'])
+            emiss = hs.emissivity if hs.emissivity is not None else mat['emiss']
             poly_pts = [Pt(p[0], p[1]) for p in hs.polygon]
 
             for iy in range(mesh.ny):
                 for ix in range(mesh.nx):
                     n = mesh.nodes[mesh.idx(ix, iy, 0)]
                     if self._pip(n.x, n.y, poly_pts):
-                        n.k = max(n.k, mat["k"])
+                        n.k = max(n.k, mat['k'])
+                        n.k_z = max(n.k_z, mat['k'])  # heatsinks are isotropic
                         n.emiss_top = emiss
                         # Heatsink adds extra radiating surface area
                         hs_thickness_m = hs.thickness_mm * 1e-3
@@ -1522,9 +1453,8 @@ class MeshGen:
         for i in range(n):
             yi, yj = poly[i].y, poly[j].y
             xi, xj = poly[i].x, poly[j].x
-            if ((yi > py) != (yj > py)) and (
-                px < (xj - xi) * (py - yi) / (yj - yi + 1e-30) + xi
-            ):
+            if ((yi > py) != (yj > py)) and \
+               (px < (xj - xi) * (py - yi) / (yj - yi + 1e-30) + xi):
                 inside = not inside
             j = i
         return inside
@@ -1535,9 +1465,9 @@ class MeshGen:
         dx, dy = x2 - x1, y2 - y1
         lsq = dx * dx + dy * dy
         if lsq < 1e-10:
-            return math.sqrt((px - x1) ** 2 + (py - y1) ** 2)
+            return math.sqrt((px - x1)**2 + (py - y1)**2)
         t = max(0, min(1, ((px - x1) * dx + (py - y1) * dy) / lsq))
-        return math.sqrt((px - x1 - t * dx) ** 2 + (py - y1 - t * dy) ** 2)
+        return math.sqrt((px - x1 - t * dx)**2 + (py - y1 - t * dy)**2)
 
     def _add_heat_sources(self, mesh, xs, ys):
         nx, ny = mesh.nx, mesh.ny
@@ -1558,22 +1488,16 @@ class MeshGen:
                 for iy in range(ny):
                     for ix in range(nx):
                         n = mesh.nodes[mesh.idx(ix, iy, 0)]
-                        if (
-                            bb[0].x - 0.5 <= n.x <= bb[1].x + 0.5
-                            and bb[0].y - 0.5 <= n.y <= bb[1].y + 0.5
-                        ):
+                        if (bb[0].x - 0.5 <= n.x <= bb[1].x + 0.5 and
+                            bb[0].y - 0.5 <= n.y <= bb[1].y + 0.5):
                             affected.append(n)
 
                 if not affected:
                     best = min(
-                        (
-                            mesh.nodes[mesh.idx(ix, iy, 0)]
-                            for iy in range(ny)
-                            for ix in range(nx)
-                        ),
-                        key=lambda n: (n.x - comp.pos.x) ** 2 + (n.y - comp.pos.y) ** 2,
-                        default=None,
-                    )
+                        (mesh.nodes[mesh.idx(ix, iy, 0)]
+                         for iy in range(ny) for ix in range(nx)),
+                        key=lambda n: (n.x - comp.pos.x)**2 + (n.y - comp.pos.y)**2,
+                        default=None)
                     if best:
                         affected = [best]
 
@@ -1598,11 +1522,8 @@ class MeshGen:
                 continue
 
             # Find traces on the path nets
-            net_traces = [
-                t
-                for t in self.pcb.traces
-                if t.net_name == cp.source_net or t.net_name == cp.sink_net
-            ]
+            net_traces = [t for t in self.pcb.traces
+                          if t.net_name == cp.source_net or t.net_name == cp.sink_net]
             if not net_traces:
                 continue
 
@@ -1625,9 +1546,9 @@ class MeshGen:
                 for iy in range(ny):
                     for ix in range(nx):
                         n = mesh.nodes[mesh.idx(ix, iy, 0)]
-                        d = self._pt_seg_dist(
-                            n.x, n.y, tr.start.x, tr.start.y, tr.end.x, tr.end.y
-                        )
+                        d = self._pt_seg_dist(n.x, n.y,
+                                              tr.start.x, tr.start.y,
+                                              tr.end.x, tr.end.y)
                         if d <= tr.width_mm / 2 + n.dx * 0.6:
                             affected.append(n)
 
@@ -1648,12 +1569,9 @@ class MeshGen:
                     n = mesh.nodes[i]
 
                     for dix, diy, diz, direction in [
-                        (-1, 0, 0, "x"),
-                        (1, 0, 0, "x"),
-                        (0, -1, 0, "y"),
-                        (0, 1, 0, "y"),
-                        (0, 0, -1, "z"),
-                        (0, 0, 1, "z"),
+                        (-1, 0, 0, 'x'), (1, 0, 0, 'x'),
+                        (0, -1, 0, 'y'), (0, 1, 0, 'y'),
+                        (0, 0, -1, 'z'), (0, 0, 1, 'z')
                     ]:
                         jx, jy, jz = ix + dix, iy + diy, iz + diz
                         if 0 <= jx < nx and 0 <= jy < ny and 0 <= jz < nz:
@@ -1671,13 +1589,13 @@ class MeshGen:
         For in-plane (x,y): uses parallel mixture conductivity
         For through-plane (z): uses series (harmonic mean) conductivity
         """
-        if direction == "x":
+        if direction == 'x':
             dist_m = abs(b.x - a.x) * 1e-3
             if dist_m < 1e-9:
                 dist_m = max(a.dx, b.dx) * 1e-3
             # Cross-section area: dy * dz
             area = min(a.dy, b.dy) * 1e-3 * min(a.dz, b.dz) * 1e-3
-        elif direction == "y":
+        elif direction == 'y':
             dist_m = abs(b.y - a.y) * 1e-3
             if dist_m < 1e-9:
                 dist_m = max(a.dy, b.dy) * 1e-3
@@ -1694,12 +1612,11 @@ class MeshGen:
         # Interface conductivity: harmonic mean of the two half-cells
         # For x,y: use in-plane k (parallel mixture, already correct)
         # For z:   use through-plane k_z (series mixture)
-        # Ref: Patankar 1980 4.2, NASA Passive Thermal Control Guidebook Fig. 14
-        if direction == "z":
+        # Ref: Patankar 1980 §4.2, NASA Passive Thermal Control Guidebook Fig. 14
+        if direction == 'z':
             ka, kb = a.k_z, b.k_z
         else:
             ka, kb = a.k, b.k
-
         if ka + kb < 1e-30:
             return 0.0
         k_eff = 2.0 * ka * kb / (ka + kb)
@@ -1724,8 +1641,9 @@ class MeshGen:
         if nz < 2:
             return
 
-        layer_map = {name: i for i, name in enumerate(self.pcb.copper_layers) if i < nz}
-        k_cu = MATERIALS["COPPER"]["k"]
+        layer_map = {name: i for i, name in enumerate(self.pcb.copper_layers)
+                     if i < nz}
+        k_cu = MATERIALS['COPPER']['k']
 
         # Standard plating thickness
         plating_thickness = 25e-6  # 25μm typical
@@ -1745,7 +1663,6 @@ class MeshGen:
             # NOT the annular pad area π/4·(d_outer² - d_drill²)
             # Ref: IPC-6012 Class 3, TI SLPA015
             d_drill = via.drill_mm * 1e-3
-
             A_barrel = math.pi * plating_thickness * (d_drill - plating_thickness)
             if A_barrel <= 0:  # degenerate: drill smaller than plating
                 A_barrel = math.pi * d_drill * plating_thickness  # thin-wall approx
@@ -1756,7 +1673,7 @@ class MeshGen:
             for iy in range(ny):
                 for ix in range(nx):
                     n = mesh.nodes[mesh.idx(ix, iy, 0)]
-                    d = (n.x - via.pos.x) ** 2 + (n.y - via.pos.y) ** 2
+                    d = (n.x - via.pos.x)**2 + (n.y - via.pos.y)**2
                     if d < best_dist:
                         best_dist = d
                         best_ix, best_iy = ix, iy
@@ -1795,7 +1712,7 @@ class MeshGen:
                 best_dist = 1e30
                 for n in mesh.nodes:
                     if n.layer == 0:
-                        d = (n.x - mp.x_mm) ** 2 + (n.y - mp.y_mm) ** 2
+                        d = (n.x - mp.x_mm)**2 + (n.y - mp.y_mm)**2
                         if d < best_dist:
                             best_dist = d
                             best = n
@@ -1805,32 +1722,23 @@ class MeshGen:
                     # Also fix corresponding nodes on other layers
                     if mesh.nz > 1:
                         for iz in range(mesh.nz):
-                            idx = (
-                                best.idx
-                                - best.layer * mesh.nx * mesh.ny
-                                + iz * mesh.nx * mesh.ny
-                            )
+                            idx = best.idx - best.layer * mesh.nx * mesh.ny + iz * mesh.nx * mesh.ny
                             if 0 <= idx < len(mesh.nodes):
                                 mesh.nodes[idx].fixed = True
                                 mesh.nodes[idx].T_fixed = mp.fixed_temp_c
 
         # Auto-detect mounting holes
         for hp in self.pcb.mounting_holes:
-            if not any(
-                abs(mp.x_mm - hp.x) < 2 and abs(mp.y_mm - hp.y) < 2
-                for mp in self.cfg.mounting
-            ):
-                self.cfg.mounting.append(
-                    MountingCfg(
-                        mp_id=f"auto_{len(self.cfg.mounting)}", x_mm=hp.x, y_mm=hp.y
-                    )
-                )
+            if not any(abs(mp.x_mm - hp.x) < 2 and abs(mp.y_mm - hp.y) < 2
+                       for mp in self.cfg.mounting):
+                self.cfg.mounting.append(MountingCfg(
+                    mp_id=f"auto_{len(self.cfg.mounting)}",
+                    x_mm=hp.x, y_mm=hp.y))
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # §8  Native C Engine Interface
 # ═══════════════════════════════════════════════════════════════════════
-
 
 class NativeEngine:
     def __init__(self):
@@ -1838,26 +1746,47 @@ class NativeEngine:
         self._load()
 
     def _load(self):
-        names = [
-            "libthermal_engine.so",
-            "libthermal_engine.dylib",
-            "thermal_engine.dll",
-        ]
+        names = ['libthermal_engine.so', 'libthermal_engine.dylib', 'thermal_engine.dll']
         try:
             script_dir = Path(__file__).parent
         except NameError:
             script_dir = Path.cwd()
-        paths = [script_dir, Path.cwd(), script_dir / "native"]
+        paths = [script_dir, Path.cwd(), script_dir / 'native']
+
+        # On Windows + Python 3.8+, ctypes no longer searches PATH for DLL
+        # dependencies. We must explicitly add the directory.
+        _dll_dirs = []
+        if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
+            for p in paths:
+                try:
+                    _dll_dirs.append(os.add_dll_directory(str(p.resolve())))
+                except OSError:
+                    pass
+
+        last_err = None
         for p in paths:
             for n in names:
                 fp = p / n
                 if fp.exists():
                     try:
-                        self._lib = ctypes.CDLL(str(fp))
+                        # winmode=0 restores pre-3.8 search behavior on Windows
+                        if sys.platform == 'win32':
+                            self._lib = ctypes.CDLL(str(fp.resolve()), winmode=0)
+                        else:
+                            self._lib = ctypes.CDLL(str(fp))
                         self._bind()
                         return
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        last_err = e
+                        self._lib = None
+
+        # Clean up dll directories
+        for d in _dll_dirs:
+            try: d.close()
+            except: pass
+
+        if last_err:
+            print(f"[TVAC] C engine found but failed to load: {last_err}", file=sys.stderr)
 
     def _bind(self):
         L = self._lib
@@ -1869,32 +1798,20 @@ class NativeEngine:
         L.thermal_destroy_state.restype = None
 
         # Node configuration — v1 API (backward compat)
-        L.thermal_set_node.argtypes = [ctypes.c_void_p, ctypes.c_int] + [
-            ctypes.c_double
-        ] * 7
+        L.thermal_set_node.argtypes = [ctypes.c_void_p, ctypes.c_int] + [ctypes.c_double] * 7
         L.thermal_set_node.restype = None
 
         # v2 API with separate top/bottom
         try:
-            L.thermal_set_node_v2.argtypes = [ctypes.c_void_p, ctypes.c_int] + [
-                ctypes.c_double
-            ] * 9
+            L.thermal_set_node_v2.argtypes = [ctypes.c_void_p, ctypes.c_int] + [ctypes.c_double] * 9
             L.thermal_set_node_v2.restype = None
             self._has_v2 = True
         except AttributeError:
             self._has_v2 = False
 
-        L.thermal_set_fixed_temp.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_double,
-        ]
+        L.thermal_set_fixed_temp.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_double]
         L.thermal_set_fixed_temp.restype = None
-        L.thermal_set_initial_temp.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_double,
-        ]
+        L.thermal_set_initial_temp.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_double]
         L.thermal_set_initial_temp.restype = None
         L.thermal_set_chamber_temp.argtypes = [ctypes.c_void_p, ctypes.c_double]
         L.thermal_set_chamber_temp.restype = None
@@ -1914,29 +1831,15 @@ class NativeEngine:
         L.thermal_alloc_neighbors.restype = ctypes.c_int
         L.thermal_set_row_ptr.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         L.thermal_set_row_ptr.restype = None
-        L.thermal_set_neighbor.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_double,
-        ]
+        L.thermal_set_neighbor.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                            ctypes.c_int, ctypes.c_double]
         L.thermal_set_neighbor.restype = None
 
         # Solvers
-        L.thermal_solve_steady.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_int,
-        ]
+        L.thermal_solve_steady.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
         L.thermal_solve_steady.restype = ctypes.c_int
-        L.thermal_solve_transient.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_double,
-            ctypes.c_double,
-            ctypes.c_int,
-        ]
+        L.thermal_solve_transient.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                               ctypes.c_double, ctypes.c_double, ctypes.c_int]
         L.thermal_solve_transient.restype = ctypes.c_int
 
     @property
@@ -1947,7 +1850,6 @@ class NativeEngine:
 # ═══════════════════════════════════════════════════════════════════════
 # §9  Thermal Solver
 # ═══════════════════════════════════════════════════════════════════════
-
 
 class ThermalSolver:
     def __init__(self):
@@ -1995,11 +1897,9 @@ class ThermalSolver:
             return TResult(error="Failed to create C state")
 
         try:
-            L.thermal_set_chamber_temp(
-                state, ctypes.c_double(cfg.chamber_wall_temp_c + C2K)
-            )
+            L.thermal_set_chamber_temp(state, ctypes.c_double(cfg.chamber_wall_temp_c + C2K))
 
-            if hasattr(self.engine, "_has_picard_tol") and self.engine._has_picard_tol:
+            if hasattr(self.engine, '_has_picard_tol') and self.engine._has_picard_tol:
                 L.thermal_set_picard_tol(state, ctypes.c_double(cfg.convergence * 10))
 
             # Set up neighbor connectivity
@@ -2015,10 +1915,9 @@ class ThermalSolver:
 
             # Set node properties
             for node in mesh.nodes:
-                if hasattr(self.engine, "_has_v2") and self.engine._has_v2:
+                if hasattr(self.engine, '_has_v2') and self.engine._has_v2:
                     L.thermal_set_node_v2(
-                        state,
-                        node.idx,
+                        state, node.idx,
                         ctypes.c_double(node.k),
                         ctypes.c_double(node.cp),
                         ctypes.c_double(node.rho),
@@ -2027,58 +1926,43 @@ class ThermalSolver:
                         ctypes.c_double(node.vol),
                         ctypes.c_double(node.surf_top),
                         ctypes.c_double(node.surf_bot),
-                        ctypes.c_double(node.heat),
-                    )
+                        ctypes.c_double(node.heat))
                 else:
                     # Fallback: combine surfaces
                     total_surf = node.surf_top + node.surf_bot
-                    avg_emiss = (
-                        (node.emiss_top + node.emiss_bot) / 2.0
-                        if total_surf > 0
-                        else 0.9
-                    )
+                    avg_emiss = (node.emiss_top + node.emiss_bot) / 2.0 if total_surf > 0 else 0.9
                     L.thermal_set_node(
-                        state,
-                        node.idx,
+                        state, node.idx,
                         ctypes.c_double(node.k),
                         ctypes.c_double(node.cp),
                         ctypes.c_double(node.rho),
                         ctypes.c_double(avg_emiss),
                         ctypes.c_double(node.vol),
                         ctypes.c_double(total_surf),
-                        ctypes.c_double(node.heat),
-                    )
+                        ctypes.c_double(node.heat))
 
                 if node.fixed:
-                    L.thermal_set_fixed_temp(
-                        state, node.idx, ctypes.c_double(node.T_fixed + C2K)
-                    )
-                L.thermal_set_initial_temp(
-                    state, node.idx, ctypes.c_double(cfg.ambient_temp_c + C2K)
-                )
+                    L.thermal_set_fixed_temp(state, node.idx,
+                                             ctypes.c_double(node.T_fixed + C2K))
+                L.thermal_set_initial_temp(state, node.idx,
+                                            ctypes.c_double(cfg.ambient_temp_c + C2K))
 
             res = self._CResult()
-            err = L.thermal_solve_steady(
-                state, ctypes.byref(res), 1 if cfg.include_radiation else 0
-            )
+            err = L.thermal_solve_steady(state, ctypes.byref(res),
+                                          1 if cfg.include_radiation else 0)
 
             if err != 0:
-                return TResult(
-                    error=f"C solver error {err}: {res.error.decode('utf-8', errors='replace')}"
-                )
+                return TResult(error=f"C solver error {err}: {res.error.decode('utf-8', errors='replace')}")
 
             temps = np.array([L.thermal_get_temp(state, i) - C2K for i in range(N)])
             return TResult(
                 temps=temps,
-                min_t=res.min_temp,
-                max_t=res.max_temp,
-                avg_t=res.avg_temp,
+                min_t=res.min_temp, max_t=res.max_temp, avg_t=res.avg_temp,
                 iters=res.iterations,
                 picard_iters=res.picard_iters,
                 time_s=time.time() - t0,
                 converged=bool(res.converged),
-                energy_balance=res.energy_balance,
-            )
+                energy_balance=res.energy_balance)
 
         finally:
             L.thermal_destroy_state(state)
@@ -2094,9 +1978,7 @@ class ThermalSolver:
             return TResult(error="Failed to create C state")
 
         try:
-            L.thermal_set_chamber_temp(
-                state, ctypes.c_double(cfg.chamber_wall_temp_c + C2K)
-            )
+            L.thermal_set_chamber_temp(state, ctypes.c_double(cfg.chamber_wall_temp_c + C2K))
 
             total_nbrs = sum(len(n.nbrs) for n in mesh.nodes)
             L.thermal_alloc_neighbors(state, total_nbrs)
@@ -2109,49 +1991,37 @@ class ThermalSolver:
             L.thermal_set_row_ptr(state, N, ptr)
 
             for node in mesh.nodes:
-                if hasattr(self.engine, "_has_v2") and self.engine._has_v2:
+                if hasattr(self.engine, '_has_v2') and self.engine._has_v2:
                     L.thermal_set_node_v2(
-                        state,
-                        node.idx,
-                        ctypes.c_double(node.k),
-                        ctypes.c_double(node.cp),
+                        state, node.idx,
+                        ctypes.c_double(node.k), ctypes.c_double(node.cp),
                         ctypes.c_double(node.rho),
-                        ctypes.c_double(node.emiss_top),
-                        ctypes.c_double(node.emiss_bot),
+                        ctypes.c_double(node.emiss_top), ctypes.c_double(node.emiss_bot),
                         ctypes.c_double(node.vol),
-                        ctypes.c_double(node.surf_top),
-                        ctypes.c_double(node.surf_bot),
-                        ctypes.c_double(node.heat),
-                    )
+                        ctypes.c_double(node.surf_top), ctypes.c_double(node.surf_bot),
+                        ctypes.c_double(node.heat))
                 else:
                     L.thermal_set_node(
-                        state,
-                        node.idx,
-                        ctypes.c_double(node.k),
-                        ctypes.c_double(node.cp),
+                        state, node.idx,
+                        ctypes.c_double(node.k), ctypes.c_double(node.cp),
                         ctypes.c_double(node.rho),
-                        ctypes.c_double((node.emiss_top + node.emiss_bot) / 2),
+                        ctypes.c_double((node.emiss_top + node.emiss_bot)/2),
                         ctypes.c_double(node.vol),
                         ctypes.c_double(node.surf_top + node.surf_bot),
-                        ctypes.c_double(node.heat),
-                    )
+                        ctypes.c_double(node.heat))
 
                 if node.fixed:
-                    L.thermal_set_fixed_temp(
-                        state, node.idx, ctypes.c_double(node.T_fixed + C2K)
-                    )
-                L.thermal_set_initial_temp(
-                    state, node.idx, ctypes.c_double(cfg.initial_temp_c + C2K)
-                )
+                    L.thermal_set_fixed_temp(state, node.idx,
+                                             ctypes.c_double(node.T_fixed + C2K))
+                L.thermal_set_initial_temp(state, node.idx,
+                                            ctypes.c_double(cfg.initial_temp_c + C2K))
 
             res = self._CResult()
             err = L.thermal_solve_transient(
-                state,
-                ctypes.byref(res),
+                state, ctypes.byref(res),
                 ctypes.c_double(cfg.duration_s),
                 ctypes.c_double(cfg.timestep_s),
-                1 if cfg.include_radiation else 0,
-            )
+                1 if cfg.include_radiation else 0)
 
             if err != 0:
                 return TResult(error=f"C transient error {err}")
@@ -2159,13 +2029,9 @@ class ThermalSolver:
             temps = np.array([L.thermal_get_temp(state, i) - C2K for i in range(N)])
             return TResult(
                 temps=temps,
-                min_t=res.min_temp,
-                max_t=res.max_temp,
-                avg_t=res.avg_temp,
-                iters=res.iterations,
-                time_s=time.time() - t0,
-                converged=bool(res.converged),
-            )
+                min_t=res.min_temp, max_t=res.max_temp, avg_t=res.avg_temp,
+                iters=res.iterations, time_s=time.time() - t0,
+                converged=bool(res.converged))
 
         finally:
             L.thermal_destroy_state(state)
@@ -2230,10 +2096,7 @@ class ThermalSolver:
                 min_t=float(np.nanmin(T_c)),
                 max_t=float(np.nanmax(T_c)),
                 avg_t=float(np.nanmean(T_c)),
-                iters=1,
-                time_s=time.time() - t0,
-                converged=True,
-            )
+                iters=1, time_s=time.time() - t0, converged=True)
 
         # Picard iteration with linearized radiation
         relax = 0.4
@@ -2247,17 +2110,16 @@ class ThermalSolver:
             T_prev = T.copy()
 
             # Linearized radiation
-            Ti3_top = np.where(~is_fixed & (surf_top > 0) & (emiss_top > 0), T**3, 0.0)
-            Ti3_bot = np.where(~is_fixed & (surf_bot > 0) & (emiss_bot > 0), T**3, 0.0)
+            Ti3_top = np.where(~is_fixed & (surf_top > 0) & (emiss_top > 0),
+                               T**3, 0.0)
+            Ti3_bot = np.where(~is_fixed & (surf_bot > 0) & (emiss_bot > 0),
+                               T**3, 0.0)
 
-            G_rad = (
-                4.0 * emiss_top * SIGMA * surf_top * Ti3_top
-                + 4.0 * emiss_bot * SIGMA * surf_bot * Ti3_bot
-            )
+            G_rad = (4.0 * emiss_top * SIGMA * surf_top * Ti3_top +
+                     4.0 * emiss_bot * SIGMA * surf_bot * Ti3_bot)
 
-            rhs_rad = emiss_top * SIGMA * surf_top * (
-                3 * Ti3_top * T + Tw4
-            ) + emiss_bot * SIGMA * surf_bot * (3 * Ti3_bot * T + Tw4)
+            rhs_rad = (emiss_top * SIGMA * surf_top * (3 * Ti3_top * T + Tw4) +
+                       emiss_bot * SIGMA * surf_bot * (3 * Ti3_bot * T + Tw4))
 
             # Modified matrix: K + diag(G_rad)
             K_mod = K.copy()
@@ -2272,13 +2134,8 @@ class ThermalSolver:
                 T_new = spsolve(K_mod, rhs_full)
             except Exception:
                 try:
-                    T_new, _ = scipy_cg(
-                        K_mod,
-                        rhs_full,
-                        x0=T,
-                        tol=cfg.convergence,
-                        maxiter=cfg.max_iterations,
-                    )
+                    T_new, _ = scipy_cg(K_mod, rhs_full, x0=T,
+                                        tol=cfg.convergence, maxiter=cfg.max_iterations)
                 except Exception as e:
                     return TResult(error=f"Solver failed: {e}")
 
@@ -2290,10 +2147,8 @@ class ThermalSolver:
             picard_iters = pic + 1
 
             if cb:
-                cb(
-                    int(30 + 60 * (pic + 1) / 100),
-                    f"Picard {pic+1}/100, ΔT={diff:.4e} K, ω={relax:.2f}",
-                )
+                cb(int(30 + 60 * (pic + 1) / 100),
+                   f"Picard {pic+1}/100, ΔT={diff:.4e} K, ω={relax:.2f}")
 
             # Adaptive relaxation
             if diff < prev_diff * 0.95:
@@ -2314,8 +2169,7 @@ class ThermalSolver:
             iters=picard_iters,
             picard_iters=picard_iters,
             time_s=time.time() - t0,
-            converged=(diff < cfg.convergence * 100),
-        )
+            converged=(diff < cfg.convergence * 100))
 
     def _solve_scipy_transient(self, mesh, cfg, cb=None):
         N = len(mesh.nodes)
@@ -2334,19 +2188,13 @@ class ThermalSolver:
             C[i] = 0.0 if node.fixed else node.rho * node.cp * node.vol
             Q[i] = node.heat
             if node.fixed:
-                rows.append(i)
-                cols.append(i)
-                kvals.append(1.0)
+                rows.append(i); cols.append(i); kvals.append(1.0)
             else:
                 diag = 0.0
                 for j, G in node.nbrs.items():
-                    rows.append(i)
-                    cols.append(j)
-                    kvals.append(-G)
+                    rows.append(i); cols.append(j); kvals.append(-G)
                     diag += G
-                rows.append(i)
-                cols.append(i)
-                kvals.append(max(diag, 1e-10))
+                rows.append(i); cols.append(i); kvals.append(max(diag, 1e-10))
 
         K = sparse.csr_matrix((kvals, (rows, cols)), shape=(N, N))
         C_diag = sparse.diags(C / dt)
@@ -2369,25 +2217,19 @@ class ThermalSolver:
             for sub in range(n_sub):
                 Qrad = np.zeros(N)
                 if cfg.include_radiation:
-                    Ti4 = T**4
+                    Ti4 = T ** 4
                     dT4 = Tw4 - Ti4
                     mask_top = (~is_fixed) & (surf_top > 0) & (emiss_top > 0)
                     mask_bot = (~is_fixed) & (surf_bot > 0) & (emiss_bot > 0)
                     Qrad += np.where(mask_top, emiss_top * SIGMA * surf_top * dT4, 0.0)
                     Qrad += np.where(mask_bot, emiss_bot * SIGMA * surf_bot * dT4, 0.0)
 
-                rhs = (
-                    (C / dt) * T_step_start
-                    - (1 - theta) * K.dot(T_step_start)
-                    + Q
-                    + Qrad
-                )
+                rhs = (C / dt) * T_step_start - (1 - theta) * K.dot(T_step_start) + Q + Qrad
                 rhs[is_fixed] = T_fixed_k[is_fixed]
 
                 try:
-                    T_new, _ = scipy_cg(
-                        LHS, rhs, x0=T, tol=cfg.convergence, maxiter=cfg.max_iterations
-                    )
+                    T_new, _ = scipy_cg(LHS, rhs, x0=T, tol=cfg.convergence,
+                                        maxiter=cfg.max_iterations)
                 except Exception:
                     T_new = spsolve(LHS, rhs)
 
@@ -2399,7 +2241,6 @@ class ThermalSolver:
                     T = T_new
                     break
                 T = T_new
-
             T = np.clip(T, 1.0, 3000.0)
 
             if cb and step % max(1, nsteps // 100) == 0:
@@ -2413,9 +2254,7 @@ class ThermalSolver:
             avg_t=float(np.mean(T_c)),
             iters=nsteps,
             time_s=time.time() - t0,
-            converged=True,
-        )
-
+            converged=True)
 
 # ═══════════════════════════════════════════════════════════════════════
 # §10  PyQt5 GUI
@@ -2423,52 +2262,20 @@ class ThermalSolver:
 
 try:
     from PyQt5.QtWidgets import (
-        QApplication,
-        QMainWindow,
-        QWidget,
-        QVBoxLayout,
-        QHBoxLayout,
-        QSplitter,
-        QTabWidget,
-        QTableWidget,
-        QTableWidgetItem,
-        QPushButton,
-        QLabel,
-        QLineEdit,
-        QDoubleSpinBox,
-        QSpinBox,
-        QComboBox,
-        QCheckBox,
-        QGroupBox,
-        QFormLayout,
-        QFileDialog,
-        QMessageBox,
-        QHeaderView,
-        QAbstractItemView,
-        QDialog,
-        QDialogButtonBox,
-        QFrame,
-        QSizePolicy,
-        QRadioButton,
-        QButtonGroup,
-        QTextEdit,
-        QScrollArea,
-        QProgressBar,
-        QInputDialog,
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
+        QPushButton, QLabel, QLineEdit, QDoubleSpinBox, QSpinBox,
+        QComboBox, QCheckBox, QGroupBox, QFormLayout, QFileDialog,
+        QMessageBox, QHeaderView, QAbstractItemView,
+        QDialog, QDialogButtonBox, QFrame, QSizePolicy,
+        QRadioButton, QButtonGroup, QTextEdit, QScrollArea,
+        QProgressBar, QInputDialog,
     )
     from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRectF, QPointF
     from PyQt5.QtGui import (
-        QPainter,
-        QColor,
-        QPen,
-        QBrush,
-        QFont,
-        QWheelEvent,
-        QMouseEvent,
-        QPolygonF,
-        QLinearGradient,
+        QPainter, QColor, QPen, QBrush, QFont, QWheelEvent, QMouseEvent,
+        QPolygonF, QLinearGradient,
     )
-
     HAS_QT = True
 except ImportError:
     HAS_QT = False
@@ -2523,13 +2330,13 @@ if HAS_QT:
 
     # Layer color definitions
     LAYER_COLORS = {
-        "F.Cu": QColor(200, 50, 50, 180),
-        "B.Cu": QColor(50, 50, 200, 180),
-        "In1.Cu": QColor(200, 200, 50, 180),
-        "In2.Cu": QColor(50, 200, 50, 180),
-        "In3.Cu": QColor(200, 50, 200, 180),
-        "In4.Cu": QColor(50, 200, 200, 180),
-        "Edge.Cuts": QColor(200, 200, 200, 255),
+        'F.Cu': QColor(200, 50, 50, 180),
+        'B.Cu': QColor(50, 50, 200, 180),
+        'In1.Cu': QColor(200, 200, 50, 180),
+        'In2.Cu': QColor(50, 200, 50, 180),
+        'In3.Cu': QColor(200, 50, 200, 180),
+        'In4.Cu': QColor(50, 200, 200, 180),
+        'Edge.Cuts': QColor(200, 200, 200, 255),
     }
 
     def get_layer_color(layer_name, alpha=180):
@@ -2606,17 +2413,14 @@ if HAS_QT:
             return (x * self._zoom + self._pan.x(), y * self._zoom + self._pan.y())
 
         def _from_screen(self, sx, sy):
-            return (
-                (sx - self._pan.x()) / self._zoom,
-                (sy - self._pan.y()) / self._zoom,
-            )
+            return ((sx - self._pan.x()) / self._zoom, (sy - self._pan.y()) / self._zoom)
 
         def resizeEvent(self, e):
             self._fit_view()
 
         def wheelEvent(self, e):
             factor = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
-            pos = e.pos() if hasattr(e, "pos") else e.position().toPoint()
+            pos = e.pos() if hasattr(e, 'pos') else e.position().toPoint()
             mx, my = pos.x(), pos.y()
             wx, wy = self._from_screen(mx, my)
             self._zoom *= factor
@@ -2723,11 +2527,7 @@ if HAS_QT:
                 border = get_layer_color(z.layer, 120)
 
                 # Prefer filled_polygons (actual copper)
-                polys = (
-                    z.filled_polygons
-                    if z.filled_polygons
-                    else ([z.outline] if z.outline else [])
-                )
+                polys = z.filled_polygons if z.filled_polygons else ([z.outline] if z.outline else [])
                 for poly_pts in polys:
                     if len(poly_pts) < 3:
                         continue
@@ -2765,16 +2565,14 @@ if HAS_QT:
                 pts.append(arc.end)
                 for k in range(len(pts) - 1):
                     x1, y1 = self._to_screen(pts[k].x, pts[k].y)
-                    x2, y2 = self._to_screen(pts[k + 1].x, pts[k + 1].y)
+                    x2, y2 = self._to_screen(pts[k+1].x, pts[k+1].y)
                     p.drawLine(int(x1), int(y1), int(x2), int(y2))
 
         def _draw_vias(self, p):
             for via in self.pcb.vias:
                 # Show via if either of its layers is visible
-                if not (
-                    self.is_layer_visible(via.layers[0])
-                    or self.is_layer_visible(via.layers[1])
-                ):
+                if not (self.is_layer_visible(via.layers[0]) or
+                        self.is_layer_visible(via.layers[1])):
                     continue
                 sx, sy = self._to_screen(via.pos.x, via.pos.y)
                 r_outer = max(2, int(via.diam_mm / 2 * self._zoom))
@@ -2793,7 +2591,7 @@ if HAS_QT:
                     visible = any(self.is_layer_visible(l) for l in pad.layers)
                     if not visible and pad.layers:
                         # Check wildcard layers
-                        if not any(l in ("*.Cu", "F&B.Cu") for l in pad.layers):
+                        if not any(l in ('*.Cu', 'F&B.Cu') for l in pad.layers):
                             continue
 
                     sx, sy = self._to_screen(pad.pos.x, pad.pos.y)
@@ -2801,10 +2599,10 @@ if HAS_QT:
                     ph = max(2, int(pad.h * self._zoom))
 
                     # Color by pad type
-                    if pad.pad_type == "thru_hole":
+                    if pad.pad_type == 'thru_hole':
                         fill = QColor(200, 200, 100, 120)
                         border = QColor(200, 200, 100, 200)
-                    elif pad.pad_type == "np_thru_hole":
+                    elif pad.pad_type == 'np_thru_hole':
                         fill = QColor(150, 150, 150, 80)
                         border = QColor(150, 150, 150, 150)
                     else:
@@ -2815,13 +2613,13 @@ if HAS_QT:
                     p.setPen(QPen(border, 1))
                     p.setBrush(QBrush(fill))
 
-                    if pad.shape == "circle":
+                    if pad.shape == 'circle':
                         r = max(pw, ph) // 2
                         p.drawEllipse(QPointF(sx, sy), r, r)
-                    elif pad.shape == "oval":
-                        p.drawEllipse(int(sx - pw / 2), int(sy - ph / 2), pw, ph)
+                    elif pad.shape == 'oval':
+                        p.drawEllipse(int(sx - pw/2), int(sy - ph/2), pw, ph)
                     else:
-                        p.drawRect(int(sx - pw / 2), int(sy - ph / 2), pw, ph)
+                        p.drawRect(int(sx - pw/2), int(sy - ph/2), pw, ph)
 
                     # Draw drill hole
                     if pad.drill > 0:
@@ -2841,24 +2639,16 @@ if HAS_QT:
 
                 is_sel = comp.ref == self._selected_ref
                 has_power = self.cfg and self.cfg.get_power(comp.ref) > 0
-                fill = (
-                    QColor(0, 150, 136, 100)
-                    if is_sel
-                    else (
-                        QColor(255, 167, 38, 80)
-                        if has_power
-                        else QColor(160, 160, 170, 30)
-                    )
-                )
+                fill = (QColor(0, 150, 136, 100) if is_sel else
+                        (QColor(255, 167, 38, 80) if has_power else
+                         QColor(160, 160, 170, 30)))
                 border = QColor(0, 200, 180) if is_sel else QColor(160, 160, 170, 80)
                 p.setBrush(QBrush(fill))
                 p.setPen(QPen(border, 2 if is_sel else 1))
                 p.drawRect(int(x1), int(y1), int(w), int(h))
 
                 if w > 20 and h > 10:
-                    p.setPen(
-                        QPen(QColor(220, 225, 232) if is_sel else QColor(180, 185, 190))
-                    )
+                    p.setPen(QPen(QColor(220, 225, 232) if is_sel else QColor(180, 185, 190)))
                     p.setFont(QFont("sans-serif", max(7, min(10, int(min(w, h) / 4)))))
                     p.drawText(QRectF(x1, y1, w, h), Qt.AlignCenter, comp.ref)
 
@@ -2866,12 +2656,10 @@ if HAS_QT:
             for hole in self.pcb.mounting_holes:
                 sx, sy = self._to_screen(hole.x, hole.y)
                 r = max(4, int(1.6 * self._zoom))
-                is_thermal = self.cfg and any(
-                    abs(mp.x_mm - hole.x) < 2
-                    and abs(mp.y_mm - hole.y) < 2
+                is_thermal = (self.cfg and any(
+                    abs(mp.x_mm - hole.x) < 2 and abs(mp.y_mm - hole.y) < 2
                     and mp.fixed_temp_c is not None
-                    for mp in self.cfg.mounting
-                )
+                    for mp in self.cfg.mounting))
                 color = QColor(0, 200, 180) if is_thermal else QColor(180, 180, 190)
                 p.setPen(QPen(color, 2))
                 p.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 40)))
@@ -2907,13 +2695,9 @@ if HAS_QT:
                     half_dy = node.dy / 2
                     x1, y1 = self._to_screen(node.x - half_dx, node.y - half_dy)
                     x2, y2 = self._to_screen(node.x + half_dx, node.y + half_dy)
-                    p.fillRect(
-                        int(x1),
-                        int(y1),
-                        max(1, int(x2 - x1)),
-                        max(1, int(y2 - y1)),
-                        QColor(r, g, b, 160),
-                    )
+                    p.fillRect(int(x1), int(y1),
+                               max(1, int(x2 - x1)), max(1, int(y2 - y1)),
+                               QColor(r, g, b, 160))
 
     # ── Solver Worker ──────────────────────────────────────────────
     class SolverWorker(QThread):
@@ -2934,16 +2718,12 @@ if HAS_QT:
                 self.progress.emit(50, f"Solving ({solver.backend})...")
                 if self.cfg.sim.mode == "transient":
                     result = solver.solve_transient(
-                        mesh,
-                        self.cfg.sim,
-                        cb=lambda p, m: self.progress.emit(50 + p // 2, m),
-                    )
+                        mesh, self.cfg.sim,
+                        cb=lambda p, m: self.progress.emit(50 + p // 2, m))
                 else:
                     result = solver.solve_steady(
-                        mesh,
-                        self.cfg.sim,
-                        cb=lambda p, m: self.progress.emit(50 + p // 2, m),
-                    )
+                        mesh, self.cfg.sim,
+                        cb=lambda p, m: self.progress.emit(50 + p // 2, m))
                 if result.error:
                     self.error.emit(result.error)
                 else:
@@ -3004,21 +2784,15 @@ if HAS_QT:
             self.emiss_spin.setRange(0, 1)
             self.emiss_spin.setDecimals(2)
             mat_data = HEATSINK_MATERIALS.get(self.mat_combo.currentText(), {})
-            self.emiss_spin.setValue(
-                hs.emissivity
-                if hs and hs.emissivity is not None
-                else mat_data.get("emiss", 0.85)
-            )
+            self.emiss_spin.setValue(hs.emissivity if hs and hs.emissivity is not None
+                                    else mat_data.get('emiss', 0.85))
             form.addRow("Emissivity:", self.emiss_spin)
             self.poly_edit = QTextEdit()
-            self.poly_edit.setPlaceholderText(
-                "Enter polygon points:\nx1, y1\nx2, y2\n..."
-            )
+            self.poly_edit.setPlaceholderText("Enter polygon points:\nx1, y1\nx2, y2\n...")
             self.poly_edit.setMaximumHeight(120)
             if hs and hs.polygon:
                 self.poly_edit.setPlainText(
-                    "\n".join(f"{p[0]:.2f}, {p[1]:.2f}" for p in hs.polygon)
-                )
+                    "\n".join(f"{p[0]:.2f}, {p[1]:.2f}" for p in hs.polygon))
             form.addRow("Polygon (mm):", self.poly_edit)
             layout.addLayout(form)
             btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -3029,12 +2803,12 @@ if HAS_QT:
 
         def get_heatsink(self):
             polygon = []
-            for line in self.poly_edit.toPlainText().strip().split("\n"):
+            for line in self.poly_edit.toPlainText().strip().split('\n'):
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    parts = line.split(",")
+                    parts = line.split(',')
                     polygon.append((float(parts[0].strip()), float(parts[1].strip())))
                 except (ValueError, IndexError):
                     pass
@@ -3043,8 +2817,7 @@ if HAS_QT:
                 material=self.mat_combo.currentText(),
                 polygon=polygon,
                 thickness_mm=self.thick_spin.value(),
-                emissivity=self.emiss_spin.value(),
-            )
+                emissivity=self.emiss_spin.value())
 
     class MountingDialog(QDialog):
         def __init__(self, parent, mp=None):
@@ -3073,9 +2846,7 @@ if HAS_QT:
             self.temp_spin.setRange(-200, 500)
             self.temp_spin.setDecimals(1)
             self.temp_spin.setSuffix(" °C")
-            self.temp_spin.setValue(
-                mp.fixed_temp_c if mp and mp.fixed_temp_c is not None else 25.0
-            )
+            self.temp_spin.setValue(mp.fixed_temp_c if mp and mp.fixed_temp_c is not None else 25.0)
             form.addRow("Temperature:", self.temp_spin)
             layout.addLayout(form)
             btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -3183,10 +2954,7 @@ if HAS_QT:
                 cb = QCheckBox(name)
                 cb.setChecked(default)
                 cb.toggled.connect(
-                    lambda v, a=attr: (
-                        setattr(self.pcb_view, a, v),
-                        self.pcb_view.update(),
-                    )
+                    lambda v, a=attr: (setattr(self.pcb_view, a, v), self.pcb_view.update())
                 )
                 tl.addWidget(cb)
                 self._layer_cbs[attr] = cb
@@ -3227,9 +2995,7 @@ if HAS_QT:
         def _build_components_tab(self):
             w = QWidget()
             layout = QVBoxLayout(w)
-            layout.addWidget(
-                QLabel("Set power dissipation for heat-generating components")
-            )
+            layout.addWidget(QLabel("Set power dissipation for heat-generating components"))
             sr = QHBoxLayout()
             self.comp_search = QLineEdit()
             self.comp_search.setPlaceholderText("Search components...")
@@ -3271,9 +3037,7 @@ if HAS_QT:
         def _build_heatsink_tab(self):
             w = QWidget()
             layout = QVBoxLayout(w)
-            layout.addWidget(
-                QLabel("Configure heatsink polygons with material properties")
-            )
+            layout.addWidget(QLabel("Configure heatsink polygons with material properties"))
             self.hs_table = QTableWidget()
             self.hs_table.setColumnCount(5)
             self.hs_table.setHorizontalHeaderLabels(
@@ -3301,9 +3065,7 @@ if HAS_QT:
         def _build_mounting_tab(self):
             w = QWidget()
             layout = QVBoxLayout(w)
-            layout.addWidget(
-                QLabel("Define thermal boundary conditions at mounting locations")
-            )
+            layout.addWidget(QLabel("Define thermal boundary conditions at mounting locations"))
             br = QHBoxLayout()
             bd = QPushButton("Auto-Detect Holes")
             bd.clicked.connect(self._on_detect_mounting)
@@ -3318,9 +3080,7 @@ if HAS_QT:
             self.mount_table.setHorizontalHeaderLabels(
                 ["X (mm)", "Y (mm)", "Diameter", "Fixed T (°C)"]
             )
-            self.mount_table.horizontalHeader().setSectionResizeMode(
-                QHeaderView.Stretch
-            )
+            self.mount_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
             self.mount_table.setAlternatingRowColors(True)
             layout.addWidget(self.mount_table)
             ar = QHBoxLayout()
@@ -3338,9 +3098,7 @@ if HAS_QT:
         def _build_current_tab(self):
             w = QWidget()
             layout = QVBoxLayout(w)
-            layout.addWidget(
-                QLabel("Define current flow paths for Joule heating (I²R) analysis")
-            )
+            layout.addWidget(QLabel("Define current flow paths for Joule heating (I²R) analysis"))
             grp = QGroupBox("Add Current Path")
             gf = QFormLayout()
             self.cp_source = QComboBox()
@@ -3367,9 +3125,7 @@ if HAS_QT:
             self.current_table.setHorizontalHeaderLabels(
                 ["ID", "Source Net", "Sink Net", "Current (A)"]
             )
-            self.current_table.horizontalHeader().setSectionResizeMode(
-                QHeaderView.Stretch
-            )
+            self.current_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
             self.current_table.setAlternatingRowColors(True)
             layout.addWidget(self.current_table)
             ar = QHBoxLayout()
@@ -3505,7 +3261,8 @@ if HAS_QT:
         # ── File operations ────────────────────────────────────────
         def _on_open(self):
             path, _ = QFileDialog.getOpenFileName(
-                self, "Open KiCad PCB", "", "KiCad PCB (*.kicad_pcb);;All Files (*)"
+                self, "Open KiCad PCB", "",
+                "KiCad PCB (*.kicad_pcb);;All Files (*)"
             )
             if path:
                 self._load_pcb(path)
@@ -3517,7 +3274,7 @@ if HAS_QT:
                 QApplication.processEvents()
                 self.pcb = KiCadPCBReader().read(path)
                 self._pcb_path = path
-                cfg_path = Path(path).with_suffix(".tvac_config.json")
+                cfg_path = Path(path).with_suffix('.tvac_config.json')
                 if cfg_path.exists():
                     try:
                         self.cfg = Config.load(str(cfg_path))
@@ -3538,8 +3295,7 @@ if HAS_QT:
                         self.cfg.mounting.append(
                             MountingCfg(
                                 mp_id=f"H{len(self.cfg.mounting)+1}",
-                                x_mm=hp.x,
-                                y_mm=hp.y,
+                                x_mm=hp.x, y_mm=hp.y,
                             )
                         )
                 n_cu = len(self.pcb.copper_layers)
@@ -3576,7 +3332,7 @@ if HAS_QT:
                 combo.addItem("(select net)")
                 combo.addItems(nets)
             for i in range(self.cp_sink.count()):
-                if "GND" in self.cp_sink.itemText(i).upper():
+                if 'GND' in self.cp_sink.itemText(i).upper():
                     self.cp_sink.setCurrentIndex(i)
                     break
 
@@ -3594,8 +3350,8 @@ if HAS_QT:
                 self.comp_table.setItem(row, 0, QTableWidgetItem(comp.ref))
                 self.comp_table.setItem(row, 1, QTableWidgetItem(comp.value))
                 fp_short = (
-                    comp.footprint.split(":")[-1][:25]
-                    if ":" in comp.footprint
+                    comp.footprint.split(':')[-1][:25]
+                    if ':' in comp.footprint
                     else comp.footprint[:25]
                 )
                 self.comp_table.setItem(row, 2, QTableWidgetItem(fp_short))
@@ -3631,7 +3387,9 @@ if HAS_QT:
         def _on_edit_power(self):
             rows = self.comp_table.selectionModel().selectedRows()
             if rows:
-                self._edit_power_for(self.comp_table.item(rows[0].row(), 0).text())
+                self._edit_power_for(
+                    self.comp_table.item(rows[0].row(), 0).text()
+                )
 
         def _edit_power_for(self, ref):
             comp = next((c for c in self.pcb.components if c.ref == ref), None)
@@ -3669,7 +3427,7 @@ if HAS_QT:
                 e = (
                     hs.emissivity
                     if hs.emissivity is not None
-                    else HEATSINK_MATERIALS.get(hs.material, {}).get("emiss", 0.85)
+                    else HEATSINK_MATERIALS.get(hs.material, {}).get('emiss', 0.85)
                 )
                 self.hs_table.setItem(row, 4, QTableWidgetItem(f"{e:.2f}"))
 
@@ -3718,12 +3476,20 @@ if HAS_QT:
             for mp in self.cfg.mounting:
                 row = self.mount_table.rowCount()
                 self.mount_table.insertRow(row)
-                self.mount_table.setItem(row, 0, QTableWidgetItem(f"{mp.x_mm:.1f}"))
-                self.mount_table.setItem(row, 1, QTableWidgetItem(f"{mp.y_mm:.1f}"))
+                self.mount_table.setItem(
+                    row, 0, QTableWidgetItem(f"{mp.x_mm:.1f}")
+                )
+                self.mount_table.setItem(
+                    row, 1, QTableWidgetItem(f"{mp.y_mm:.1f}")
+                )
                 self.mount_table.setItem(
                     row, 2, QTableWidgetItem(f"{mp.diameter_mm:.1f}")
                 )
-                t = f"{mp.fixed_temp_c:.1f}" if mp.fixed_temp_c is not None else "–"
+                t = (
+                    f"{mp.fixed_temp_c:.1f}"
+                    if mp.fixed_temp_c is not None
+                    else "–"
+                )
                 item = QTableWidgetItem(t)
                 if mp.fixed_temp_c is not None:
                     item.setBackground(QColor(102, 187, 106, 50))
@@ -3741,23 +3507,23 @@ if HAS_QT:
                     self.cfg.mounting.append(
                         MountingCfg(
                             mp_id=f"H{len(self.cfg.mounting)+1}",
-                            x_mm=hp.x,
-                            y_mm=hp.y,
+                            x_mm=hp.x, y_mm=hp.y,
                         )
                     )
                     count += 1
             self._populate_mount_table()
             self.pcb_view.update()
             QMessageBox.information(
-                self,
-                "Detect",
-                f"Found {len(self.pcb.mounting_holes)} hole(s), added {count} new",
+                self, "Detect",
+                f"Found {len(self.pcb.mounting_holes)} hole(s), added {count} new"
             )
 
         def _on_add_mounting(self):
             dlg = MountingDialog(self)
             if dlg.exec_() == QDialog.Accepted:
-                temp = dlg.temp_spin.value() if dlg.temp_check.isChecked() else None
+                temp = (
+                    dlg.temp_spin.value() if dlg.temp_check.isChecked() else None
+                )
                 self.cfg.mounting.append(
                     MountingCfg(
                         mp_id=f"MP{len(self.cfg.mounting)+1}",
@@ -3843,13 +3609,9 @@ if HAS_QT:
                 return
             cp = self.cfg.current_paths[idx]
             val, ok = QInputDialog.getDouble(
-                self,
-                "Edit Current",
+                self, "Edit Current",
                 f"Current (A) for {cp.source_net} → {cp.sink_net}:",
-                cp.current_a,
-                0,
-                100,
-                3,
+                cp.current_a, 0, 100, 3,
             )
             if ok:
                 cp.current_a = val
@@ -3864,7 +3626,9 @@ if HAS_QT:
         # ── Config ─────────────────────────────────────────────────
         def _on_save_config(self):
             if self._pcb_path:
-                cfg_path = str(Path(self._pcb_path).with_suffix(".tvac_config.json"))
+                cfg_path = str(
+                    Path(self._pcb_path).with_suffix('.tvac_config.json')
+                )
             else:
                 cfg_path, _ = QFileDialog.getSaveFileName(
                     self, "Save Config", "", "JSON (*.json)"
@@ -3893,7 +3657,9 @@ if HAS_QT:
 
         def _sync_sim_cfg(self):
             s = self.cfg.sim
-            s.mode = "transient" if self.rb_transient.isChecked() else "steady_state"
+            s.mode = (
+                "transient" if self.rb_transient.isChecked() else "steady_state"
+            )
             s.heat_source_mode = (
                 "current_injection"
                 if self.rb_current_inj.isChecked()
@@ -3919,16 +3685,14 @@ if HAS_QT:
             mode = self.cfg.sim.heat_source_mode
             if mode == "component_power" and self.cfg.total_power() <= 0:
                 QMessageBox.warning(
-                    self,
-                    "No Heat Sources",
+                    self, "No Heat Sources",
                     "No power dissipation defined.\n"
                     "Set power for components, or switch to Current Injection mode.",
                 )
                 return
             if mode == "current_injection" and not self.cfg.current_paths:
                 QMessageBox.warning(
-                    self,
-                    "No Current Paths",
+                    self, "No Current Paths",
                     "No current paths defined.\n"
                     "Define current paths, or switch to Component Power mode.",
                 )
@@ -3962,7 +3726,7 @@ if HAS_QT:
 
             # Build result summary
             ebal = ""
-            if hasattr(result, "energy_balance") and result.energy_balance:
+            if hasattr(result, 'energy_balance') and result.energy_balance:
                 eb = result.energy_balance
                 ebal = (
                     f"\n\nEnergy Balance:\n"
@@ -3978,8 +3742,7 @@ if HAS_QT:
             )
             self.status_label.setStyleSheet("color:#66bb6a;")
             QMessageBox.information(
-                self,
-                "Simulation Complete",
+                self, "Simulation Complete",
                 f"Solver: {ThermalSolver().backend}\n"
                 f"Mesh: {len(mesh.nodes)} nodes "
                 f"({mesh.nx}×{mesh.ny}×{mesh.nz})\n\n"
@@ -4003,7 +3766,6 @@ if HAS_QT:
 # ═══════════════════════════════════════════════════════════════════════
 # §11  Entry Point
 # ═══════════════════════════════════════════════════════════════════════
-
 
 def main():
     if not HAS_QT:

@@ -36,6 +36,15 @@
 #include <omp.h>
 #endif
 
+/* ── Platform-specific symbol export ─────────────────────────── */
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+  #define TVAC_API __declspec(dllexport)
+#elif defined(__GNUC__) && __GNUC__ >= 4
+  #define TVAC_API __attribute__((visibility("default")))
+#else
+  #define TVAC_API
+#endif
+
 /* ── Physical constants ──────────────────────────────────────── */
 #define SIGMA  5.670374419e-8   /* Stefan-Boltzmann  W/(m²·K⁴)  */
 #define C2K    273.15            /* Celsius → Kelvin offset       */
@@ -130,7 +139,7 @@ static int *alloc_i(int n) {
 /* =====================================================================
  *  API: create / destroy
  * ===================================================================== */
-State *thermal_create_state(int N, int nx, int ny, int nz)
+TVAC_API State *thermal_create_state(int N, int nx, int ny, int nz)
 {
     if (N <= 0) return NULL;
     State *s = (State*)calloc(1, sizeof(State));
@@ -185,7 +194,7 @@ State *thermal_create_state(int N, int nx, int ny, int nz)
     return s;
 }
 
-void thermal_destroy_state(State *s)
+TVAC_API void thermal_destroy_state(State *s)
 {
     if (!s) return;
     free(s->k);        free(s->cp);       free(s->rho);
@@ -204,7 +213,7 @@ void thermal_destroy_state(State *s)
  *  For backward compatibility, thermal_set_node sets both equally.
  *  Use thermal_set_node_v2 for explicit top/bottom control.
  * ===================================================================== */
-void thermal_set_node(State *s, int i,
+TVAC_API void thermal_set_node(State *s, int i,
                       double k, double cp, double rho, double emiss,
                       double vol, double surf, double heat)
 {
@@ -220,7 +229,7 @@ void thermal_set_node(State *s, int i,
     s->Q[i]         = heat;
 }
 
-void thermal_set_node_v2(State *s, int i,
+TVAC_API void thermal_set_node_v2(State *s, int i,
                          double k, double cp, double rho,
                          double emiss_top, double emiss_bot,
                          double vol, double surf_top, double surf_bot,
@@ -238,7 +247,7 @@ void thermal_set_node_v2(State *s, int i,
     s->Q[i]         = heat;
 }
 
-void thermal_set_fixed_temp(State *s, int i, double Tk)
+TVAC_API void thermal_set_fixed_temp(State *s, int i, double Tk)
 {
     if (!s || i < 0 || i >= s->N) return;
     s->is_fixed[i] = 1;
@@ -246,35 +255,35 @@ void thermal_set_fixed_temp(State *s, int i, double Tk)
     s->T[i]        = Tk;
 }
 
-void thermal_set_initial_temp(State *s, int i, double Tk)
+TVAC_API void thermal_set_initial_temp(State *s, int i, double Tk)
 {
     if (!s || i < 0 || i >= s->N) return;
     s->T[i] = Tk;
     s->T_prev[i] = Tk;
 }
 
-void thermal_set_chamber_temp(State *s, double Tk)
+TVAC_API void thermal_set_chamber_temp(State *s, double Tk)
 {
     if (s) s->T_chamber = Tk;
 }
 
-void thermal_set_ambient_temp(State *s, double Tk)
+TVAC_API void thermal_set_ambient_temp(State *s, double Tk)
 {
     if (s) s->T_ambient = Tk;
 }
 
-void thermal_set_picard_tol(State *s, double tol)
+TVAC_API void thermal_set_picard_tol(State *s, double tol)
 {
     if (s && tol > 0) s->picard_tol = tol;
 }
 
-double thermal_get_temp(State *s, int i)
+TVAC_API double thermal_get_temp(State *s, int i)
 {
     if (!s || i < 0 || i >= s->N) return 0.0;
     return s->T[i];
 }
 
-void thermal_set_progress_callback(State *s, progress_cb_t cb)
+TVAC_API void thermal_set_progress_callback(State *s, progress_cb_t cb)
 {
     if (s) s->cb = cb;
 }
@@ -282,7 +291,7 @@ void thermal_set_progress_callback(State *s, progress_cb_t cb)
 /* =====================================================================
  *  API: neighbour connectivity
  * ===================================================================== */
-int thermal_alloc_neighbors(State *s, int total)
+TVAC_API int thermal_alloc_neighbors(State *s, int total)
 {
     if (!s || total < 0) return ERR_INVALID;
     s->nnz     = total;
@@ -293,12 +302,12 @@ int thermal_alloc_neighbors(State *s, int total)
     return OK;
 }
 
-void thermal_set_row_ptr(State *s, int row, int ptr)
+TVAC_API void thermal_set_row_ptr(State *s, int row, int ptr)
 {
     if (s && row >= 0 && row <= s->N) s->row_ptr[row] = ptr;
 }
 
-void thermal_set_neighbor(State *s, int node, int offset,
+TVAC_API void thermal_set_neighbor(State *s, int node, int offset,
                           int nbr, double G)
 {
     if (!s) return;
@@ -443,8 +452,8 @@ static double norm_inf(int N, const double *a)
     return mx;
 }
 
-/* axpy: y = a*x + y */
-static void axpy(int N, double a, const double *x, double *y)
+/* axpy: y = a*x + y  (kept for potential future use) */
+static void __attribute__((unused)) axpy(int N, double a, const double *x, double *y)
 {
     #ifdef _OPENMP
     #pragma omp parallel for schedule(static)
@@ -933,7 +942,7 @@ static void compute_energy_balance(State *s)
  *     - Convergence on max ΔT
  *  3. Verify energy balance
  * ===================================================================== */
-int thermal_solve_steady(State *s, Result *res, int include_radiation)
+TVAC_API int thermal_solve_steady(State *s, Result *res, int include_radiation)
 {
     clock_t t0 = clock();
     int N = s->N;
@@ -1177,11 +1186,11 @@ done:
  *
  *  where θ = 0.5 (Crank-Nicolson, 2nd order accurate).
  *
- *  Radiation is evaluated with lagged T^4 from the previous timestep
- *  (no Picard sub-iterations). This is first-order accurate in time
- *  for the radiation term. Acceptable when dt << tau_thermal.
+ *  Radiation is evaluated with Picard sub-iterations at each time step
+ *  for accuracy, but only 2-3 iterations are typically needed since
+ *  the temperature change per step is small.
  * ===================================================================== */
-int thermal_solve_transient(State *s, Result *res,
+TVAC_API int thermal_solve_transient(State *s, Result *res,
                             double duration, double dt,
                             int include_radiation)
 {
@@ -1331,15 +1340,15 @@ int thermal_solve_transient(State *s, Result *res,
 }
 
 /* ── Diagnostics API ─────────────────────────────────────────── */
-double thermal_get_energy_in(State *s)      { return s ? s->energy_in : 0; }
-double thermal_get_energy_rad(State *s)     { return s ? s->energy_rad : 0; }
-double thermal_get_energy_cond(State *s)    { return s ? s->energy_cond : 0; }
-double thermal_get_energy_balance(State *s) { return s ? s->energy_balance : 0; }
+TVAC_API double thermal_get_energy_in(State *s)      { return s ? s->energy_in : 0; }
+TVAC_API double thermal_get_energy_rad(State *s)     { return s ? s->energy_rad : 0; }
+TVAC_API double thermal_get_energy_cond(State *s)    { return s ? s->energy_cond : 0; }
+TVAC_API double thermal_get_energy_balance(State *s) { return s ? s->energy_balance : 0; }
 
 /* ── Version helpers ─────────────────────────────────────────── */
-const char *thermal_get_version(void) { return "4.0.0"; }
+TVAC_API const char *thermal_get_version(void) { return "4.0.0"; }
 
-int thermal_has_openmp(void)
+TVAC_API int thermal_has_openmp(void)
 {
 #ifdef _OPENMP
     return 1;
@@ -1348,7 +1357,7 @@ int thermal_has_openmp(void)
 #endif
 }
 
-int thermal_get_num_threads(void)
+TVAC_API int thermal_get_num_threads(void)
 {
 #ifdef _OPENMP
     return omp_get_max_threads();
