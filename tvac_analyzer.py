@@ -1260,16 +1260,60 @@ class MeshGen:
         return xs, ys
 
     def _compute_copper_fractions(self, mesh, xs, ys):
-        """Compute actual copper area fraction for each mesh cell."""
+        """Compute copper area fraction for each mesh cell.
+
+        Performance note:
+        The original implementation was O(nx*ny*(zones+traces+vias)) per layer,
+        which becomes impractical once the adaptive grid reaches a few 10^4–10^5
+        cells. This version limits work using bounding boxes and grid-index
+        range lookups (searchsorted), which turns most cases into
+        O(k * local_cells) with k the number of copper features.
+        """
         nx, ny = mesh.nx, mesh.ny
-        layer_map = {name: i for i, name in enumerate(self.pcb.copper_layers)
-                     if i < mesh.nz}
+
+        # Map KiCad copper layer names to mesh z indices (only layers present in mesh)
+        layer_map = {name: i for i, name in enumerate(self.pcb.copper_layers) if i < mesh.nz}
+
+        # Precompute axis metadata for fast bbox->index mapping
+        xs = np.asarray(xs, dtype=float)
+        ys = np.asarray(ys, dtype=float)
+        # Cell size upper bounds used to slightly expand bboxes for robust coverage
+        max_dx = float(np.max(np.diff(xs))) if len(xs) > 1 else 0.0
+        max_dy = float(np.max(np.diff(ys))) if len(ys) > 1 else 0.0
+
+        def clamp(v, lo, hi):
+            return lo if v < lo else hi if v > hi else v
+
+        def bbox_to_ix(x0, x1):
+            # xs are cell boundaries, valid cell indices are [0, len(xs)-2]
+            if x1 < xs[0] or x0 > xs[-1]:
+                return None
+            ix0 = int(np.searchsorted(xs, x0, side='right') - 1)
+            ix1 = int(np.searchsorted(xs, x1, side='left') - 1)
+            ix0 = clamp(ix0, 0, nx - 1)
+            ix1 = clamp(ix1, 0, nx - 1)
+            if ix1 < ix0:
+                return None
+            return ix0, ix1
+
+        def bbox_to_iy(y0, y1):
+            if y1 < ys[0] or y0 > ys[-1]:
+                return None
+            iy0 = int(np.searchsorted(ys, y0, side='right') - 1)
+            iy1 = int(np.searchsorted(ys, y1, side='left') - 1)
+            iy0 = clamp(iy0, 0, ny - 1)
+            iy1 = clamp(iy1, 0, ny - 1)
+            if iy1 < iy0:
+                return None
+            return iy0, iy1
 
         # Initialize copper fraction to 0
         for n in mesh.nodes:
             n.copper_frac = 0.0
 
-        # Zones — use filled_polygons if available, else outline
+        # ─────────────────────────────────────────────────────────────
+        # Zones
+        # ─────────────────────────────────────────────────────────────
         for z in self.pcb.zones:
             iz = layer_map.get(z.layer, -1)
             if iz < 0:
@@ -1277,16 +1321,34 @@ class MeshGen:
 
             polys = z.filled_polygons if z.filled_polygons else ([z.outline] if z.outline else [])
             for poly in polys:
-                if len(poly) < 3:
+                if not poly or len(poly) < 3:
                     continue
-                for iy in range(ny):
-                    for ix in range(nx):
+
+                xs_poly = [p.x for p in poly]
+                ys_poly = [p.y for p in poly]
+                xmin, xmax = min(xs_poly), max(xs_poly)
+                ymin, ymax = min(ys_poly), max(ys_poly)
+
+                # Expand slightly to catch cells whose center is near edges
+                pad_x = max_dx * 0.6
+                pad_y = max_dy * 0.6
+                ixr = bbox_to_ix(xmin - pad_x, xmax + pad_x)
+                iyr = bbox_to_iy(ymin - pad_y, ymax + pad_y)
+                if ixr is None or iyr is None:
+                    continue
+                ix0, ix1 = ixr
+                iy0, iy1 = iyr
+
+                for iy in range(iy0, iy1 + 1):
+                    for ix in range(ix0, ix1 + 1):
                         n = mesh.nodes[mesh.idx(ix, iy, iz)]
                         if self._pip(n.x, n.y, poly):
-                            # Zone fill: typically high copper fraction
+                            # Zone fill: typical copper pour coverage (empirical default)
                             n.copper_frac = max(n.copper_frac, 0.85)
 
-        # Traces — compute coverage fraction per cell
+        # ─────────────────────────────────────────────────────────────
+        # Traces (line segments)
+        # ─────────────────────────────────────────────────────────────
         for tr in self.pcb.traces:
             iz = layer_map.get(tr.layer, -1)
             if iz < 0:
@@ -1295,50 +1357,95 @@ class MeshGen:
             if hw < 0.01:
                 continue
 
-            for iy in range(ny):
-                for ix in range(nx):
+            # Bounding box around segment, expanded by half-width + cell padding
+            pad = hw + 0.6 * max(max_dx, max_dy)
+            xmin = min(tr.start.x, tr.end.x) - pad
+            xmax = max(tr.start.x, tr.end.x) + pad
+            ymin = min(tr.start.y, tr.end.y) - pad
+            ymax = max(tr.start.y, tr.end.y) + pad
+            ixr = bbox_to_ix(xmin, xmax)
+            iyr = bbox_to_iy(ymin, ymax)
+            if ixr is None or iyr is None:
+                continue
+            ix0, ix1 = ixr
+            iy0, iy1 = iyr
+
+            for iy in range(iy0, iy1 + 1):
+                for ix in range(ix0, ix1 + 1):
                     n = mesh.nodes[mesh.idx(ix, iy, iz)]
                     dist = self._pt_seg_dist(n.x, n.y,
                                              tr.start.x, tr.start.y,
                                              tr.end.x, tr.end.y)
                     if dist <= hw + n.dx * 0.5:
-                        # Estimate overlap fraction
-                        overlap = max(0, hw - dist + n.dx * 0.3) / n.dx
+                        # Estimate overlap fraction (fast heuristic)
+                        overlap = max(0.0, hw - dist + n.dx * 0.3) / max(n.dx, 1e-9)
                         overlap = min(1.0, overlap)
-                        # Blend: trace on top of zone
                         n.copper_frac = max(n.copper_frac, overlap * 0.95)
 
-        # Arc traces
+        # ─────────────────────────────────────────────────────────────
+        # Arc traces (approximated as segments)
+        # ─────────────────────────────────────────────────────────────
         for arc in self.pcb.arc_traces:
             iz = layer_map.get(arc.layer, -1)
             if iz < 0:
                 continue
             hw = arc.width_mm / 2.0
-            # Approximate arc as line segments
+            if hw < 0.01:
+                continue
+
             pts = self._arc_to_segments(arc)
+            pad = hw + 0.6 * max(max_dx, max_dy)
             for seg_start, seg_end in pts:
-                for iy in range(ny):
-                    for ix in range(nx):
+                xmin = min(seg_start.x, seg_end.x) - pad
+                xmax = max(seg_start.x, seg_end.x) + pad
+                ymin = min(seg_start.y, seg_end.y) - pad
+                ymax = max(seg_start.y, seg_end.y) + pad
+                ixr = bbox_to_ix(xmin, xmax)
+                iyr = bbox_to_iy(ymin, ymax)
+                if ixr is None or iyr is None:
+                    continue
+                ix0, ix1 = ixr
+                iy0, iy1 = iyr
+
+                for iy in range(iy0, iy1 + 1):
+                    for ix in range(ix0, ix1 + 1):
                         n = mesh.nodes[mesh.idx(ix, iy, iz)]
                         dist = self._pt_seg_dist(n.x, n.y,
                                                  seg_start.x, seg_start.y,
                                                  seg_end.x, seg_end.y)
                         if dist <= hw + n.dx * 0.5:
-                            overlap = max(0, hw - dist + n.dx * 0.3) / n.dx
-                            n.copper_frac = max(n.copper_frac, min(1.0, overlap * 0.95))
+                            overlap = max(0.0, hw - dist + n.dx * 0.3) / max(n.dx, 1e-9)
+                            overlap = min(1.0, overlap)
+                            n.copper_frac = max(n.copper_frac, overlap * 0.95)
 
-        # Via pads — add copper at via locations
+        # ─────────────────────────────────────────────────────────────
+        # Vias (pads / barrels approximated as disks per layer)
+        # ─────────────────────────────────────────────────────────────
         for via in self.pcb.vias:
             r = via.diam_mm / 2.0
+            pad = r + 0.6 * max(max_dx, max_dy)
+            xmin = via.pos.x - pad
+            xmax = via.pos.x + pad
+            ymin = via.pos.y - pad
+            ymax = via.pos.y + pad
+            ixr = bbox_to_ix(xmin, xmax)
+            iyr = bbox_to_iy(ymin, ymax)
+            if ixr is None or iyr is None:
+                continue
+            ix0, ix1 = ixr
+            iy0, iy1 = iyr
+
+            # Only touch the layers the via spans
             for layer_name in [via.layers[0], via.layers[1]]:
                 iz = layer_map.get(layer_name, -1)
                 if iz < 0:
                     continue
-                for iy in range(ny):
-                    for ix in range(nx):
+                for iy in range(iy0, iy1 + 1):
+                    for ix in range(ix0, ix1 + 1):
                         n = mesh.nodes[mesh.idx(ix, iy, iz)]
-                        dist = math.sqrt((n.x - via.pos.x)**2 + (n.y - via.pos.y)**2)
-                        if dist <= r + n.dx * 0.3:
+                        dx = n.x - via.pos.x
+                        dy = n.y - via.pos.y
+                        if (dx * dx + dy * dy) <= (r + 0.3 * n.dx) ** 2:
                             n.copper_frac = max(n.copper_frac, 0.9)
 
     def _arc_to_segments(self, arc, n_seg=8):

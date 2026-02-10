@@ -181,8 +181,8 @@ TVAC_API State *thermal_create_state(int N, int nx, int ny, int nz)
     s->T_chamber  = 25.0 + C2K;
     s->T_ambient  = 25.0 + C2K;
     s->tol        = 1e-10;
-    s->max_iter   = 50000;
-    s->max_picard = 150;
+    s->max_iter   = 20000; /* avoid pathological stalls */
+    s->max_picard = 120;
     s->picard_tol = 1e-4;  /* 0.1 mK convergence */
     s->cb         = NULL;
 
@@ -723,6 +723,8 @@ static int pcg_solve(int N,
     double threshold = tol * r0_norm + abs_tol;
 
     int iter;
+    double prev_r_norm = r0_norm;
+    int stall = 0;
     for (iter = 0; iter < max_iter; iter++) {
         spmv(N, Av, Ac, Arp, p, Ap);
 
@@ -744,6 +746,17 @@ static int pcg_solve(int N,
             iter++;
             break;
         }
+
+        /* Stagnation guard: break if residual stops improving */
+        if (r_norm > prev_r_norm * 0.9995) {
+            stall++;
+            if (stall > 80) {
+                break;
+            }
+        } else {
+            stall = 0;
+        }
+        prev_r_norm = r_norm;
 
         precond_apply(P, r, z);
         double rz_new = dot(N, r, z);
